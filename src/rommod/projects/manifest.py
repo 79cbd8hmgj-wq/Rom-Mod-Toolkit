@@ -88,6 +88,7 @@ class CInjectChange:
     symbol_component: str | None = None
     scratch_register: str | None = None
     sources: tuple[str, ...] = ()
+    include_dirs: tuple[str, ...] = ()
     type: Literal["c_inject"] = "c_inject"
 
 
@@ -124,6 +125,20 @@ def _optional_str(mapping: dict, key: str, field: str) -> str | None:
     if not isinstance(value, str) or not value:
         raise ManifestError(f"{field}.{key} must be a non-empty string when provided")
     return value
+
+
+def _parse_string_list(mapping: dict, key: str, field: str) -> tuple[str, ...]:
+    if key not in mapping:
+        return ()
+    raw = mapping.get(key)
+    if not isinstance(raw, list):
+        raise ManifestError(f"{field}.{key} must be a list of strings")
+    parsed: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or not item:
+            raise ManifestError(f"{field}.{key}[{index}] must be a non-empty string")
+        parsed.append(item)
+    return tuple(parsed)
 
 
 def _parse_sha256(value: str) -> str:
@@ -251,6 +266,7 @@ def _parse_change(value: object, index: int) -> Change:
             symbol_component=_optional_str(mapping, "symbol_component", field),
             scratch_register=_optional_str(mapping, "scratch_register", field),
             sources=sources,
+            include_dirs=_parse_string_list(mapping, "include_dirs", field),
         )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
@@ -346,6 +362,8 @@ def _change_to_mapping(change: Change) -> dict:
             result["source"] = change.source
         else:
             result["sources"] = list(change.sources)
+        if change.include_dirs:
+            result["include_dirs"] = list(change.include_dirs)
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
