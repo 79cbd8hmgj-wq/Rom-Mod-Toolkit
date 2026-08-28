@@ -22,13 +22,17 @@ The current NDS path combines a trustworthy Phase 1 rebuild foundation with Phas
 - Record the resolved armips executable and version in build reports when assembly patches are used.
 - Build guarded symbol-aware ARM hooks plus short and long Thumb hooks into verified code caves.
 - Require an explicit low scratch register for long-range Thumb veneers so register clobbering is never implicit.
+- Compile freestanding ARM C payloads with Clang/LLD and inject them through the same guarded hook/cave pipeline.
+- Link C `extern` references to validated ARM/data symbols and Thumb functions from the component-aware NDS analysis JSON.
+- Generate ARM-to-Thumb call veneers automatically for C calls into analyzed Thumb functions, using `r12/ip` as ABI call-scratch and garbage-collecting unused veneers at link time.
 
 ## Requirements
 
 - Python 3.10+
 - `ndspy==4.2.0`
 - `PyYAML>=6.0`
-- `armips` 0.11-compatible executable when a project contains `type: armips` changes
+- `armips` 0.11-compatible executable when a project contains assembly or injection changes
+- Clang with `arm-none-eabi` support, LLD, and `llvm-objcopy` when a project contains `type: c_inject` changes
 
 For development/testing:
 
@@ -226,6 +230,47 @@ changes:
 
 After armips runs, the toolkit diffs the complete target and rejects any changed byte outside the selected hook width or declared cave reserve. ARM hooks use 4 bytes, short Thumb hooks use 2 bytes, and long Thumb veneers use 8 bytes. The hook and cave cannot overlap, target size cannot change, and the configured ROM output is not written when any guard fails. Resolved hook/cave addresses, hook mode, hook size, and any scratch register are recorded in `reports/build.json`.
 
+### Freestanding ARM C payload injection
+
+`type: c_inject` turns a small C function into ARM machine code and installs it behind the same guarded 4-byte ARM hook used by the assembly injector. The required entry point is `rommod_payload`.
+
+```yaml
+tools:
+  armips: /path/to/armips
+  clang: /path/to/clang
+  ld_lld: /path/to/ld.lld
+  llvm_objcopy: /path/to/llvm-objcopy
+
+changes:
+  - type: c_inject
+    target: arm9
+    symbol_file: analysis/symbols.json
+    hook: BattleDamage
+    expected: "05 06 07 08"
+    source: src/battle_damage.c
+    cave: auto
+    reserve: 32
+    fill: "00"
+```
+
+Example payload:
+
+```c
+extern int GameHelper(int value);
+
+int rommod_payload(int value) {
+    return GameHelper(value + 7);
+}
+```
+
+The compiler runs freestanding for ARM946E-S in ARM mode with no standard library, no PIC/PIE, and function/data sections enabled. LLD places `rommod_payload` at the toolkit-selected cave address, and `llvm-objcopy` extracts only the executable image. Read-only constants may travel with the code; writable `.data`, `.bss`, COMMON storage, and a missing `rommod_payload` entry fail the build. The compiled payload must fit inside the declared cave after the toolkit's 8-byte call/return wrapper.
+
+The same component-aware analysis JSON used for the hook is also validated before linking C externs. ARM function labels and neutral/data labels in the selected component are exposed to LLD as absolute addresses. Thumb function labels receive generated ARM veneers instead of unsafe direct ARM branches. Each veneer loads `thumb_address | 1` into `r12/ip` and branches through it, explicitly switching the CPU into Thumb state. Veneers live in separate link sections and LLD `--gc-sections` removes any that the C payload does not reference.
+
+The wrapper branches from the hook to the cave, calls `rommod_payload` with `BL`, then branches back to `hook + 4`. It does **not** replay the overwritten instruction. Normal ARM procedure-call rules apply: C may modify caller-saved registers (`r0`-`r3`, `r12`, `lr`) and condition flags, so hook selection/payload design must account for the state expected by the original game code.
+
+Compiler paths resolve from `tools.*`, then their `ROMMOD_*` environment overrides, then `PATH`. The build report records the resolved Clang, LLD, and llvm-objcopy versions plus C payload size, load address, and whether Thumb interworking was linked. Any compiler, linker, assembler, expected-byte, cave, size, or bounded-write failure prevents the configured ROM output from being written.
+
 ## Extraction output
 
 `rommod extract my-mod` refreshes `build/extracted/` with a human-inspectable snapshot:
@@ -292,20 +337,21 @@ The test suite uses a programmatically generated synthetic Nintendo DS fixture; 
 pytest -q
 ```
 
-Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, guarded ARM hook injection, short Thumb branches, and explicit-scratch long Thumb veneers when armips is available.
+Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, guarded ARM hook injection, short Thumb branches, explicit-scratch long Thumb veneers, freestanding ARM C compilation, writable-data rejection, bounded C injection, validated C calls into imported ARM game symbols, and generated ARM-to-Thumb interworking veneers.
 
 ## Deferred NDS work
 
 The current NDS path does **not** yet include:
 
 - broader code-cave/free-space discovery beyond guarded trailing fill runs;
-- compiled C/C++ injection and linking;
+- direct `c_inject` entry from Thumb hook sites;
+- user-authored multi-object C/C++ builds and richer runtime support;
 - Keystone or Unicorn integration;
 - BPS/IPS/xdelta patch-file generation;
 - NitroFS create/delete operations;
 - emulator-driven behavioral validation.
 
-The immediate next NDS work can focus on broader explicit free-space management, distributable patch generation, and compiled-code integration while preserving the same source-lock and bounded-write guarantees.
+The next coding-focused NDS work can extend `c_inject` to Thumb hook sites and then add user-authored multi-source linking, while patch distribution and broader free-space management remain separate follow-up layers.
 
 ## PSP status
 
