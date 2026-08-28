@@ -3,7 +3,7 @@ name: NDS toolkit verification
 on:
   push:
     branches:
-      - feature/nds-c-thumb-interworking
+      - 'feature/nds-*'
   workflow_dispatch:
 
 jobs:
