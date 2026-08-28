@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -26,6 +26,11 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class ToolsConfig:
+    armips: str | None = None
+
+
+@dataclass(frozen=True)
 class FileReplaceChange:
     target: str
     source: str
@@ -41,7 +46,15 @@ class BytePatchChange:
     type: Literal["byte_patch"] = "byte_patch"
 
 
-Change: TypeAlias = FileReplaceChange | BytePatchChange
+@dataclass(frozen=True)
+class ArmipsChange:
+    target: str
+    script: str
+    symbols: str | None = None
+    type: Literal["armips"] = "armips"
+
+
+Change: TypeAlias = FileReplaceChange | BytePatchChange | ArmipsChange
 
 
 @dataclass(frozen=True)
@@ -51,6 +64,7 @@ class ProjectManifest:
     source: SourceConfig
     output: OutputConfig
     changes: tuple[Change, ...] = ()
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
 
 def _require_mapping(value: object, field: str) -> dict:
@@ -63,6 +77,15 @@ def _require_str(mapping: dict, key: str, field: str) -> str:
     value = mapping.get(key)
     if not isinstance(value, str) or not value:
         raise ManifestError(f"{field}.{key} must be a non-empty string")
+    return value
+
+
+def _optional_str(mapping: dict, key: str, field: str) -> str | None:
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ManifestError(f"{field}.{key} must be a non-empty string when provided")
     return value
 
 
@@ -113,6 +136,12 @@ def _parse_change(value: object, index: int) -> Change:
             expected=_parse_hex_bytes(mapping.get("expected"), f"{field}.expected"),
             replacement=_parse_hex_bytes(mapping.get("replacement"), f"{field}.replacement"),
         )
+    if kind == "armips":
+        return ArmipsChange(
+            target=_require_str(mapping, "target", field),
+            script=_require_str(mapping, "script", field),
+            symbols=_optional_str(mapping, "symbols", field),
+        )
     raise ManifestError(f"{field}.type is unsupported: {kind!r}")
 
 
@@ -133,11 +162,15 @@ def _from_mapping(data: object) -> ProjectManifest:
     output_map = _require_mapping(root.get("output"), "output")
     output = OutputConfig(rom=_require_str(output_map, "rom", "output"))
 
+    raw_tools = root.get("tools", {})
+    tools_map = _require_mapping(raw_tools, "tools")
+    tools = ToolsConfig(armips=_optional_str(tools_map, "armips", "tools"))
+
     raw_changes = root.get("changes", [])
     if not isinstance(raw_changes, list):
         raise ManifestError("changes must be a list")
     changes = tuple(_parse_change(value, index) for index, value in enumerate(raw_changes))
-    return ProjectManifest(1, "nds", source, output, changes)
+    return ProjectManifest(1, "nds", source, output, changes, tools)
 
 
 def _change_to_mapping(change: Change) -> dict:
@@ -151,6 +184,11 @@ def _change_to_mapping(change: Change) -> dict:
             "expected": change.expected.hex(" ").upper(),
             "replacement": change.replacement.hex(" ").upper(),
         }
+    if isinstance(change, ArmipsChange):
+        result = {"type": change.type, "target": change.target, "script": change.script}
+        if change.symbols is not None:
+            result["symbols"] = change.symbols
+        return result
     raise ManifestError(f"Unsupported change object: {type(change).__name__}")
 
 
@@ -173,6 +211,8 @@ def write_manifest(project_dir: Path, manifest: ProjectManifest) -> None:
         "output": {"rom": manifest.output.rom},
         "changes": [_change_to_mapping(change) for change in manifest.changes],
     }
+    if manifest.tools.armips is not None:
+        root["tools"] = {"armips": manifest.tools.armips}
     path = Path(project_dir) / "rommod.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(root, sort_keys=False), encoding="utf-8")
