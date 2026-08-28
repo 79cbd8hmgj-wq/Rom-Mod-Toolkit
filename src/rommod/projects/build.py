@@ -17,6 +17,7 @@ from rommod.platforms.nds.assembler import ArmipsRunResult, run_armips_change
 from rommod.platforms.nds.binaries import get_main_binary
 from rommod.platforms.nds.bytepatch import apply_byte_change
 from rommod.platforms.nds.filesystem import replace_file
+from rommod.platforms.nds.injection import InjectionRunResult, run_inject_change
 from rommod.platforms.nds.overlays import get_overlay_raw
 from rommod.platforms.nds.rom import NdsRom
 from rommod.platforms.nds.validation import validate_nds_bytes
@@ -25,6 +26,7 @@ from rommod.projects.manifest import (
     BytePatchChange,
     Change,
     FileReplaceChange,
+    InjectChange,
     ProjectManifest,
     load_manifest,
 )
@@ -84,6 +86,8 @@ def _canonical_target(change: Change) -> str:
         return change.target
     if isinstance(change, ArmipsChange):
         return change.target
+    if isinstance(change, InjectChange):
+        return change.target
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
 
@@ -93,7 +97,7 @@ def _apply_change(
     manifest: ProjectManifest,
     change: Change,
     index: int,
-) -> ArmipsRunResult | None:
+) -> ArmipsRunResult | InjectionRunResult | None:
     if isinstance(change, FileReplaceChange):
         source_path = resolve_inside(project, change.source)
         if not source_path.is_file():
@@ -105,6 +109,14 @@ def _apply_change(
         return None
     if isinstance(change, ArmipsChange):
         return run_armips_change(
+            rom,
+            project,
+            change,
+            manifest.tools.armips,
+            index,
+        )
+    if isinstance(change, InjectChange):
+        return run_inject_change(
             rom,
             project,
             change,
@@ -148,6 +160,27 @@ def _change_report(change: Change) -> dict[str, object]:
         }
         if change.symbols is not None:
             result["symbols"] = change.symbols
+        if change.symbol_file is not None:
+            result["symbol_file"] = change.symbol_file
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
+        return result
+    if isinstance(change, InjectChange):
+        result = {
+            "type": change.type,
+            "target": change.target,
+            "symbol_file": change.symbol_file,
+            "hook": change.hook,
+            "expected": change.expected.hex(" ").upper(),
+            "script": change.script,
+            "cave": change.cave,
+            "reserve": change.reserve,
+            "fill": f"{change.fill:02X}",
+        }
+        if change.symbols is not None:
+            result["symbols"] = change.symbols
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
         return result
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
@@ -157,7 +190,7 @@ def _write_report(
     manifest: ProjectManifest,
     output_bytes: bytes,
     output_sha256: str,
-    armips_runs: list[ArmipsRunResult],
+    assembly_runs: list[ArmipsRunResult | InjectionRunResult],
 ) -> Path:
     report_path = resolve_inside(project, "reports/build.json")
     report = {
@@ -172,8 +205,19 @@ def _write_report(
             "ndspy": f"{NDSPY_VERSION.major}.{NDSPY_VERSION.minor}.{NDSPY_VERSION.patch}"
         },
     }
-    if armips_runs:
-        run = armips_runs[-1]
+    injection_runs = [run for run in assembly_runs if isinstance(run, InjectionRunResult)]
+    if injection_runs:
+        report["injections"] = [
+            {
+                "target": run.target,
+                "hook_address": run.hook_address,
+                "cave_address": run.cave_address,
+                "reserve": run.reserve,
+            }
+            for run in injection_runs
+        ]
+    if assembly_runs:
+        run = assembly_runs[-1]
         report["tools"]["armips"] = {
             "path": str(run.executable),
             "version": run.version,
@@ -192,11 +236,11 @@ def build_project(project_dir: Path) -> BuildResult:
     rom = NdsRom.load(source)
     _clean_work_dir(project)
 
-    armips_runs: list[ArmipsRunResult] = []
+    assembly_runs: list[ArmipsRunResult | InjectionRunResult] = []
     for index, change in enumerate(manifest.changes):
-        armips_run = _apply_change(rom, project, manifest, change, index)
-        if armips_run is not None:
-            armips_runs.append(armips_run)
+        assembly_run = _apply_change(rom, project, manifest, change, index)
+        if assembly_run is not None:
+            assembly_runs.append(assembly_run)
 
     expected_targets = _snapshot_touched_targets(rom, manifest)
     output_bytes = rom.serialize()
@@ -204,12 +248,12 @@ def build_project(project_dir: Path) -> BuildResult:
     rebuilt = NdsRom.from_bytes(output_bytes)
     _verify_touched_targets(rebuilt, expected_targets)
 
-    for armips_run in armips_runs:
-        if armips_run.symbol_destination is not None and armips_run.symbol_bytes is not None:
-            atomic_write_bytes(armips_run.symbol_destination, armips_run.symbol_bytes)
+    for assembly_run in assembly_runs:
+        if assembly_run.symbol_destination is not None and assembly_run.symbol_bytes is not None:
+            atomic_write_bytes(assembly_run.symbol_destination, assembly_run.symbol_bytes)
 
     output_path = resolve_inside(project, manifest.output.rom)
     atomic_write_bytes(output_path, output_bytes)
     output_sha256 = sha256_file(output_path)
-    report_path = _write_report(project, manifest, output_bytes, output_sha256, armips_runs)
+    report_path = _write_report(project, manifest, output_bytes, output_sha256, assembly_runs)
     return BuildResult(output_path, manifest.source.sha256, output_sha256, report_path)
