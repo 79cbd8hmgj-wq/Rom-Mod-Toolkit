@@ -1,0 +1,178 @@
+"""ROM mod project manifest model and YAML codec."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, TypeAlias
+
+import yaml
+
+from rommod.errors import ManifestError
+
+
+_HEX = set("0123456789abcdef")
+
+
+@dataclass(frozen=True)
+class SourceConfig:
+    rom: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class OutputConfig:
+    rom: str
+
+
+@dataclass(frozen=True)
+class FileReplaceChange:
+    target: str
+    source: str
+    type: Literal["file_replace"] = "file_replace"
+
+
+@dataclass(frozen=True)
+class BytePatchChange:
+    target: str
+    offset: int
+    expected: bytes
+    replacement: bytes
+    type: Literal["byte_patch"] = "byte_patch"
+
+
+Change: TypeAlias = FileReplaceChange | BytePatchChange
+
+
+@dataclass(frozen=True)
+class ProjectManifest:
+    schema_version: int
+    platform: Literal["nds"]
+    source: SourceConfig
+    output: OutputConfig
+    changes: tuple[Change, ...] = ()
+
+
+def _require_mapping(value: object, field: str) -> dict:
+    if not isinstance(value, dict):
+        raise ManifestError(f"{field} must be a mapping")
+    return value
+
+
+def _require_str(mapping: dict, key: str, field: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value:
+        raise ManifestError(f"{field}.{key} must be a non-empty string")
+    return value
+
+
+def _parse_sha256(value: str) -> str:
+    lowered = value.lower()
+    if len(lowered) != 64 or any(ch not in _HEX for ch in lowered):
+        raise ManifestError("source.sha256 must be 64 hexadecimal characters")
+    return lowered
+
+
+def _parse_offset(value: object, field: str) -> int:
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str):
+        try:
+            result = int(value, 0)
+        except ValueError as exc:
+            raise ManifestError(f"{field} must be an integer or 0x-prefixed integer") from exc
+    else:
+        raise ManifestError(f"{field} must be an integer or 0x-prefixed integer")
+    if result < 0:
+        raise ManifestError(f"{field} must be non-negative")
+    return result
+
+
+def _parse_hex_bytes(value: object, field: str) -> bytes:
+    if not isinstance(value, str):
+        raise ManifestError(f"{field} must be a hexadecimal byte string")
+    compact = "".join(value.split())
+    if len(compact) % 2 or any(ch.lower() not in _HEX for ch in compact):
+        raise ManifestError(f"{field} must contain complete hexadecimal bytes")
+    return bytes.fromhex(compact)
+
+
+def _parse_change(value: object, index: int) -> Change:
+    field = f"changes[{index}]"
+    mapping = _require_mapping(value, field)
+    kind = mapping.get("type")
+    if kind == "file_replace":
+        return FileReplaceChange(
+            target=_require_str(mapping, "target", field),
+            source=_require_str(mapping, "source", field),
+        )
+    if kind == "byte_patch":
+        return BytePatchChange(
+            target=_require_str(mapping, "target", field),
+            offset=_parse_offset(mapping.get("offset"), f"{field}.offset"),
+            expected=_parse_hex_bytes(mapping.get("expected"), f"{field}.expected"),
+            replacement=_parse_hex_bytes(mapping.get("replacement"), f"{field}.replacement"),
+        )
+    raise ManifestError(f"{field}.type is unsupported: {kind!r}")
+
+
+def _from_mapping(data: object) -> ProjectManifest:
+    root = _require_mapping(data, "manifest")
+    schema_version = root.get("schema_version")
+    if schema_version != 1:
+        raise ManifestError(f"schema_version must be 1, got {schema_version!r}")
+    platform = root.get("platform")
+    if platform != "nds":
+        raise ManifestError(f"platform must be 'nds', got {platform!r}")
+
+    source_map = _require_mapping(root.get("source"), "source")
+    source = SourceConfig(
+        rom=_require_str(source_map, "rom", "source"),
+        sha256=_parse_sha256(_require_str(source_map, "sha256", "source")),
+    )
+    output_map = _require_mapping(root.get("output"), "output")
+    output = OutputConfig(rom=_require_str(output_map, "rom", "output"))
+
+    raw_changes = root.get("changes", [])
+    if not isinstance(raw_changes, list):
+        raise ManifestError("changes must be a list")
+    changes = tuple(_parse_change(value, index) for index, value in enumerate(raw_changes))
+    return ProjectManifest(1, "nds", source, output, changes)
+
+
+def _change_to_mapping(change: Change) -> dict:
+    if isinstance(change, FileReplaceChange):
+        return {"type": change.type, "target": change.target, "source": change.source}
+    if isinstance(change, BytePatchChange):
+        return {
+            "type": change.type,
+            "target": change.target,
+            "offset": f"0x{change.offset:X}",
+            "expected": change.expected.hex(" ").upper(),
+            "replacement": change.replacement.hex(" ").upper(),
+        }
+    raise ManifestError(f"Unsupported change object: {type(change).__name__}")
+
+
+def load_manifest(project_dir: Path) -> ProjectManifest:
+    path = Path(project_dir) / "rommod.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ManifestError(f"Manifest not found: {path}") from exc
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"Invalid YAML in {path}: {exc}") from exc
+    return _from_mapping(data)
+
+
+def write_manifest(project_dir: Path, manifest: ProjectManifest) -> None:
+    root = {
+        "schema_version": manifest.schema_version,
+        "platform": manifest.platform,
+        "source": {"rom": manifest.source.rom, "sha256": manifest.source.sha256},
+        "output": {"rom": manifest.output.rom},
+        "changes": [_change_to_mapping(change) for change in manifest.changes],
+    }
+    path = Path(project_dir) / "rommod.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(root, sort_keys=False), encoding="utf-8")
