@@ -1,0 +1,43 @@
+name: C Thumb interworking
+
+on:
+  push:
+    branches:
+      - feature/nds-c-thumb-interworking
+  workflow_dispatch:
+
+jobs:
+  interworking:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang lld llvm
+
+      - name: Build armips
+        run: |
+          git clone --depth 1 --recurse-submodules https://github.com/Kingcom/armips.git "$RUNNER_TEMP/armips-src"
+          cmake -S "$RUNNER_TEMP/armips-src" -B "$RUNNER_TEMP/armips-build" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/armips-build"
+          ARMIPS_PATH="$(find "$RUNNER_TEMP/armips-build" -type f -name armips -perm -111 | head -1)"
+          test -n "$ARMIPS_PATH"
+          echo "ROMMOD_ARMIPS=$ARMIPS_PATH" >> "$GITHUB_ENV"
+
+      - name: Resolve LLVM tools
+        run: |
+          echo "ROMMOD_CLANG=$(command -v clang)" >> "$GITHUB_ENV"
+          echo "ROMMOD_LD_LLD=$(command -v ld.lld)" >> "$GITHUB_ENV"
+          echo "ROMMOD_LLVM_OBJCOPY=$(command -v llvm-objcopy)" >> "$GITHUB_ENV"
+
+      - name: Install toolkit
+        run: python -m pip install -e '.[test]'
+
+      - name: Run interworking test
+        run: pytest -q tests/integration/test_c_thumb_interworking.py
