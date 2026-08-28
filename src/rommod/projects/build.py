@@ -181,6 +181,8 @@ def _change_report(change: Change) -> dict[str, object]:
             result["symbols"] = change.symbols
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
+        if change.scratch_register is not None:
+            result["scratch_register"] = change.scratch_register
         return result
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
@@ -213,6 +215,9 @@ def _write_report(
                 "hook_address": run.hook_address,
                 "cave_address": run.cave_address,
                 "reserve": run.reserve,
+                "hook_mode": run.hook_mode,
+                "hook_size": run.hook_size,
+                "scratch_register": run.scratch_register,
             }
             for run in injection_runs
         ]
