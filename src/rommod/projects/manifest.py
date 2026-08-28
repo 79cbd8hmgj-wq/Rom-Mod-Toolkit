@@ -81,12 +81,13 @@ class CInjectChange:
     symbol_file: str
     hook: str
     expected: bytes
-    source: str
+    source: str | None
     cave: str | int
     reserve: int
     fill: int = 0
     symbol_component: str | None = None
     scratch_register: str | None = None
+    sources: tuple[str, ...] = ()
     type: Literal["c_inject"] = "c_inject"
 
 
@@ -184,6 +185,25 @@ def _parse_cave(value: object, field: str) -> str | int:
     return _parse_offset(value, field)
 
 
+def _parse_c_sources(mapping: dict, field: str) -> tuple[str | None, tuple[str, ...]]:
+    has_source = "source" in mapping
+    has_sources = "sources" in mapping
+    if has_source == has_sources:
+        raise ManifestError(f"{field} must provide exactly one of source or sources")
+    if has_source:
+        return _require_str(mapping, "source", field), ()
+
+    raw_sources = mapping.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ManifestError(f"{field}.sources must be a non-empty list of strings")
+    parsed: list[str] = []
+    for source_index, item in enumerate(raw_sources):
+        if not isinstance(item, str) or not item:
+            raise ManifestError(f"{field}.sources[{source_index}] must be a non-empty string")
+        parsed.append(item)
+    return None, tuple(parsed)
+
+
 def _parse_change(value: object, index: int) -> Change:
     field = f"changes[{index}]"
     mapping = _require_mapping(value, field)
@@ -218,17 +238,19 @@ def _parse_change(value: object, index: int) -> Change:
         reserve = _parse_positive_int(mapping.get("reserve"), f"{field}.reserve")
         if reserve % 4:
             raise ManifestError(f"{field}.reserve must be a multiple of 4")
+        source, sources = _parse_c_sources(mapping, field)
         return CInjectChange(
             target=_require_str(mapping, "target", field),
             symbol_file=_require_str(mapping, "symbol_file", field),
             hook=_require_str(mapping, "hook", field),
             expected=expected,
-            source=_require_str(mapping, "source", field),
+            source=source,
             cave=_parse_cave(mapping.get("cave"), f"{field}.cave"),
             reserve=reserve,
             fill=_parse_fill_byte(mapping.get("fill", "00"), f"{field}.fill"),
             symbol_component=_optional_str(mapping, "symbol_component", field),
             scratch_register=_optional_str(mapping, "scratch_register", field),
+            sources=sources,
         )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
@@ -316,11 +338,14 @@ def _change_to_mapping(change: Change) -> dict:
             "symbol_file": change.symbol_file,
             "hook": change.hook,
             "expected": change.expected.hex(" ").upper(),
-            "source": change.source,
             "cave": change.cave if change.cave == "auto" else f"0x{change.cave:X}",
             "reserve": change.reserve,
             "fill": f"{change.fill:02X}",
         }
+        if change.source is not None:
+            result["source"] = change.source
+        else:
+            result["sources"] = list(change.sources)
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
