@@ -20,6 +20,8 @@ The current NDS path combines a trustworthy Phase 1 rebuild foundation with Phas
 - Permit ARM/Thumb mode switching and CPU-address `.org` patches without exposing the source ROM to armips.
 - Emit optional armips symbol files only after rebuilt-ROM validation succeeds.
 - Record the resolved armips executable and version in build reports when assembly patches are used.
+- Build guarded symbol-aware ARM hooks plus short and long Thumb hooks into verified code caves.
+- Require an explicit low scratch register for long-range Thumb veneers so register clobbering is never implicit.
 
 ## Requirements
 
@@ -185,9 +187,9 @@ Example fragment using an imported symbol:
 .word 0xAABBCCDD
 ```
 
-### Automatic ARM hook injection
+### Automatic ARM/Thumb hook injection
 
-`type: inject` builds a guarded ARM hook from a named imported symbol, places the payload in reserved free space, and automatically branches back to the instruction after the overwritten hook. The first injector intentionally supports **ARM hooks only**; Thumb hooks are rejected until the veneer/trampoline layer is enabled.
+`type: inject` builds a guarded hook from a named imported symbol, places the payload in reserved free space, and automatically returns to the first instruction after the overwritten hook. Imported symbol metadata selects ARM versus Thumb behavior.
 
 ```yaml
 changes:
@@ -203,11 +205,26 @@ changes:
     symbols: reports/battle_damage.sym
 ```
 
-The payload is a positionless ARM fragment; the toolkit owns `.org`, architecture/mode selection, the generated hook branch, the cave label, and the return branch. File-owning/import directives remain forbidden.
+The payload is a positionless fragment assembled in the hook symbol's instruction set. The toolkit owns `.org`, architecture/mode selection, the generated hook/veneer, the cave label, and the return path. File-owning/import directives remain forbidden.
+
+For Thumb symbols, a cave inside the Thumb-1 unconditional branch range uses a 2-byte short hook. A farther cave uses an 8-byte literal-load veneer. Long Thumb hooks require `scratch_register: r0` through `r7`; that register is explicitly documented as clobbered by the veneer. The long return path uses the same scratch register and a fixed 8-byte return stub at the end of the reserved cave.
+
+```yaml
+changes:
+  - type: inject
+    target: arm9
+    symbol_file: analysis/symbols.json
+    hook: ThumbBattleDamage
+    expected: "05 06 07 08 09 0A 0B 0C"
+    script: asm/thumb_payload.asm
+    cave: auto
+    reserve: 24
+    scratch_register: r3
+```
 
 `cave: auto` searches only the **trailing** run of the requested fill byte in the selected target, aligned to four bytes. It never treats an arbitrary internal zero run as executable free space. An explicit cave may instead be supplied as a CPU address. The reserved cave must already contain exactly the declared fill byte.
 
-After armips runs, the toolkit diffs the complete target and rejects any changed byte outside the 4-byte hook or declared cave reserve. The hook and cave cannot overlap, target size cannot change, and the configured ROM output is not written when any guard fails. Resolved hook/cave addresses are recorded in `reports/build.json`.
+After armips runs, the toolkit diffs the complete target and rejects any changed byte outside the selected hook width or declared cave reserve. ARM hooks use 4 bytes, short Thumb hooks use 2 bytes, and long Thumb veneers use 8 bytes. The hook and cave cannot overlap, target size cannot change, and the configured ROM output is not written when any guard fails. Resolved hook/cave addresses, hook mode, hook size, and any scratch register are recorded in `reports/build.json`.
 
 ## Extraction output
 
@@ -275,13 +292,12 @@ The test suite uses a programmatically generated synthetic Nintendo DS fixture; 
 pytest -q
 ```
 
-Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, and guarded automatic ARM hook injection when armips is available.
+Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, guarded ARM hook injection, short Thumb branches, and explicit-scratch long Thumb veneers when armips is available.
 
 ## Deferred NDS work
 
 The current NDS path does **not** yet include:
 
-- Thumb hooks and long-range veneers/trampolines;
 - broader code-cave/free-space discovery beyond guarded trailing fill runs;
 - compiled C/C++ injection and linking;
 - Keystone or Unicorn integration;
@@ -289,7 +305,7 @@ The current NDS path does **not** yet include:
 - NitroFS create/delete operations;
 - emulator-driven behavioral validation.
 
-The immediate next phase extends the proven ARM injector with Thumb-safe veneers/trampolines while preserving the same hook-byte, cave, and diff guards.
+The immediate next NDS work can focus on broader explicit free-space management, distributable patch generation, and compiled-code integration while preserving the same source-lock and bounded-write guarantees.
 
 ## PSP status
 
