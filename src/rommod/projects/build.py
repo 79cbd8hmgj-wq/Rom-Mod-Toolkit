@@ -191,6 +191,8 @@ def _change_report(change: Change) -> dict[str, object]:
         }
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
+        if change.scratch_register is not None:
+            result["scratch_register"] = change.scratch_register
         return result
     if isinstance(change, InjectChange):
         result = {
@@ -258,6 +260,9 @@ def _write_report(
                 "code_address": run.code_address,
                 "reserve": run.reserve,
                 "payload_size": run.payload_size,
+                "hook_mode": run.hook_mode,
+                "hook_size": run.hook_size,
+                "scratch_register": run.scratch_register,
                 "thumb_interworking": run.thumb_interworking,
             }
             for run in c_injection_runs
