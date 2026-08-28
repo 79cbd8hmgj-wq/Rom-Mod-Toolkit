@@ -91,12 +91,12 @@ def test_c_injection_builds_arm_to_thumb_call_veneer(synthetic_rom_path: Path, t
     arm9 = get_main_binary(rebuilt, "arm9")
 
     assert arm9[4:8] == bytes.fromhex("0D 00 00 EA")
-    assert arm9[64:72] == bytes.fromhex("03 00 00 EB EF FF FF EA")
-    assert arm9[72:84] == bytes.fromhex("00 C0 9F E5 1C FF 2F E1 21 00 00 02")
-    assert arm9[84:88] == bytes.fromhex("FB FF FF EA")
+    assert arm9[64:72] == bytes.fromhex("00 00 00 EB EF FF FF EA")
+    assert arm9[72:76] == bytes.fromhex("FF FF FF EA")
+    assert arm9[76:88] == bytes.fromhex("00 C0 9F E5 1C FF 2F E1 21 00 00 02")
 
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
     c_run = report["c_injections"][0]
-    assert c_run["code_address"] == 0x02000054
-    assert c_run["thumb_veneers"] == 1
-    assert c_run["veneer_bytes"] == 12
+    assert c_run["code_address"] == 0x02000048
+    assert c_run["payload_size"] == 16
+    assert c_run["thumb_interworking"] is True
