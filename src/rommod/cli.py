@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from rommod.errors import RomModError
 from rommod.platforms.nds.extract import extract_project
 from rommod.platforms.nds.rom import NdsRom
+from rommod.platforms.nds.validation import verify_project, verify_rom
 from rommod.projects.build import build_project
 from rommod.projects.manifest import load_manifest
 from rommod.projects.project import init_project, verify_source
@@ -30,6 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_cmd = subparsers.add_parser("build", help="build an NDS mod project")
     build_cmd.add_argument("project", type=Path)
+
+    verify_cmd = subparsers.add_parser("verify", help="verify an NDS ROM or project output")
+    verify_cmd.add_argument("target", type=Path)
     return parser
 
 
@@ -44,32 +50,40 @@ def _inspect_path(target: Path) -> NdsRom:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "init":
-        manifest = init_project(args.source, args.project)
-        print(f"Initialized {args.project} ({manifest.source.sha256})")
-        return 0
-    if args.command == "inspect":
-        print(json.dumps(asdict(_inspect_path(args.target).metadata()), indent=2, sort_keys=True))
-        return 0
-    if args.command == "extract":
-        print(json.dumps(extract_project(args.project), indent=2, sort_keys=True))
-        return 0
-    if args.command == "build":
-        result = build_project(args.project)
-        print(
-            json.dumps(
-                {
-                    "output": str(result.output_path),
-                    "report": str(result.report_path),
-                    "sha256": result.output_sha256,
-                },
-                indent=2,
-                sort_keys=True,
+    try:
+        if args.command == "init":
+            manifest = init_project(args.source, args.project)
+            print(f"Initialized {args.project} ({manifest.source.sha256})")
+            return 0
+        if args.command == "inspect":
+            print(json.dumps(asdict(_inspect_path(args.target).metadata()), indent=2, sort_keys=True))
+            return 0
+        if args.command == "extract":
+            print(json.dumps(extract_project(args.project), indent=2, sort_keys=True))
+            return 0
+        if args.command == "build":
+            result = build_project(args.project)
+            print(
+                json.dumps(
+                    {
+                        "output": str(result.output_path),
+                        "report": str(result.report_path),
+                        "sha256": result.output_sha256,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
             )
-        )
+            return 0
+        if args.command == "verify":
+            report = verify_project(args.target) if args.target.is_dir() else verify_rom(args.target)
+            print(json.dumps(asdict(report), indent=2, sort_keys=True))
+            return 0
+        parser.print_help()
         return 0
-    parser.print_help()
-    return 0
+    except RomModError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
