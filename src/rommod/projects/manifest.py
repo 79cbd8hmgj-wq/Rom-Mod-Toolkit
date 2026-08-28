@@ -51,10 +51,27 @@ class ArmipsChange:
     target: str
     script: str
     symbols: str | None = None
+    symbol_file: str | None = None
+    symbol_component: str | None = None
     type: Literal["armips"] = "armips"
 
 
-Change: TypeAlias = FileReplaceChange | BytePatchChange | ArmipsChange
+@dataclass(frozen=True)
+class InjectChange:
+    target: str
+    symbol_file: str
+    hook: str
+    expected: bytes
+    script: str
+    cave: str | int
+    reserve: int
+    fill: int = 0
+    symbols: str | None = None
+    symbol_component: str | None = None
+    type: Literal["inject"] = "inject"
+
+
+Change: TypeAlias = FileReplaceChange | BytePatchChange | ArmipsChange | InjectChange
 
 
 @dataclass(frozen=True)
@@ -120,6 +137,34 @@ def _parse_hex_bytes(value: object, field: str) -> bytes:
     return bytes.fromhex(compact)
 
 
+def _parse_positive_int(value: object, field: str) -> int:
+    result = _parse_offset(value, field)
+    if result <= 0:
+        raise ManifestError(f"{field} must be positive")
+    return result
+
+
+def _parse_fill_byte(value: object, field: str) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        result = value
+    elif isinstance(value, str):
+        compact = value.strip().lower().removeprefix("0x")
+        if len(compact) != 2 or any(ch not in _HEX for ch in compact):
+            raise ManifestError(f"{field} must be one hexadecimal byte")
+        result = int(compact, 16)
+    else:
+        raise ManifestError(f"{field} must be an integer byte or two-digit hex string")
+    if result < 0 or result > 0xFF:
+        raise ManifestError(f"{field} must be between 0 and 255")
+    return result
+
+
+def _parse_cave(value: object, field: str) -> str | int:
+    if value == "auto":
+        return "auto"
+    return _parse_offset(value, field)
+
+
 def _parse_change(value: object, index: int) -> Change:
     field = f"changes[{index}]"
     mapping = _require_mapping(value, field)
@@ -141,6 +186,27 @@ def _parse_change(value: object, index: int) -> Change:
             target=_require_str(mapping, "target", field),
             script=_require_str(mapping, "script", field),
             symbols=_optional_str(mapping, "symbols", field),
+            symbol_file=_optional_str(mapping, "symbol_file", field),
+            symbol_component=_optional_str(mapping, "symbol_component", field),
+        )
+    if kind == "inject":
+        expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
+        if len(expected) != 4:
+            raise ManifestError(f"{field}.expected must contain exactly 4 bytes for an ARM hook")
+        reserve = _parse_positive_int(mapping.get("reserve"), f"{field}.reserve")
+        if reserve % 4:
+            raise ManifestError(f"{field}.reserve must be a multiple of 4")
+        return InjectChange(
+            target=_require_str(mapping, "target", field),
+            symbol_file=_require_str(mapping, "symbol_file", field),
+            hook=_require_str(mapping, "hook", field),
+            expected=expected,
+            script=_require_str(mapping, "script", field),
+            cave=_parse_cave(mapping.get("cave"), f"{field}.cave"),
+            reserve=reserve,
+            fill=_parse_fill_byte(mapping.get("fill", "00"), f"{field}.fill"),
+            symbols=_optional_str(mapping, "symbols", field),
+            symbol_component=_optional_str(mapping, "symbol_component", field),
         )
     raise ManifestError(f"{field}.type is unsupported: {kind!r}")
 
@@ -188,6 +254,27 @@ def _change_to_mapping(change: Change) -> dict:
         result = {"type": change.type, "target": change.target, "script": change.script}
         if change.symbols is not None:
             result["symbols"] = change.symbols
+        if change.symbol_file is not None:
+            result["symbol_file"] = change.symbol_file
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
+        return result
+    if isinstance(change, InjectChange):
+        result = {
+            "type": change.type,
+            "target": change.target,
+            "symbol_file": change.symbol_file,
+            "hook": change.hook,
+            "expected": change.expected.hex(" ").upper(),
+            "script": change.script,
+            "cave": change.cave if change.cave == "auto" else f"0x{change.cave:X}",
+            "reserve": change.reserve,
+            "fill": f"{change.fill:02X}",
+        }
+        if change.symbols is not None:
+            result["symbols"] = change.symbols
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
         return result
     raise ManifestError(f"Unsupported change object: {type(change).__name__}")
 
