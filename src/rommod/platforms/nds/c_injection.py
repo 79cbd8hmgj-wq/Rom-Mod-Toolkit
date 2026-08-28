@@ -35,6 +35,7 @@ class CInjectionRunResult:
     code_address: int
     reserve: int
     payload_size: int
+    thumb_interworking: bool
     clang: Path
     clang_version: str
     ld_lld: Path
@@ -84,10 +85,16 @@ def run_c_inject_change(
     imported = _imported_symbol_directives(project, change, region)
     table = load_symbol_table(resolve_inside(project, change.symbol_file))
     component = change.symbol_component or change.target
+    component_symbols = table.for_component(component)
     link_symbols = {
         symbol.name: symbol.address
-        for symbol in table.for_component(component)
+        for symbol in component_symbols
         if symbol.instruction_set != "thumb"
+    }
+    thumb_link_symbols = {
+        symbol.name: symbol.address
+        for symbol in component_symbols
+        if symbol.instruction_set == "thumb"
     }
 
     compile_result: CCompileResult = compile_arm_c_payload(
@@ -98,6 +105,7 @@ def run_c_inject_change(
         tools=tools,
         job_index=job_index,
         link_symbols=link_symbols,
+        thumb_link_symbols=thumb_link_symbols,
     )
 
     executable = resolve_armips(project, tools.armips)
@@ -171,6 +179,7 @@ def run_c_inject_change(
         code_address=code_address,
         reserve=change.reserve,
         payload_size=len(compile_result.binary),
+        thumb_interworking=compile_result.thumb_interworking,
         clang=compile_result.clang,
         clang_version=compile_result.clang_version,
         ld_lld=compile_result.ld_lld,
