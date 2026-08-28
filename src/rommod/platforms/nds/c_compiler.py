@@ -6,6 +6,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from rommod.core.paths import resolve_inside
 from rommod.core.subprocesses import (
@@ -115,14 +116,32 @@ ASSERT(SIZEOF(.bss) == 0, "bss is not supported")
 """
 
 
+def _normalize_sources(source: str | None, sources: Sequence[str] | None) -> tuple[str, ...]:
+    if source is not None and sources:
+        raise BuildError("C payload must provide source or sources, not both")
+    if source is not None:
+        if not isinstance(source, str) or not source:
+            raise BuildError("C payload source must be a non-empty string")
+        return (source,)
+    if not sources:
+        raise BuildError("C payload must provide at least one source file")
+    normalized: list[str] = []
+    for index, value in enumerate(sources):
+        if not isinstance(value, str) or not value:
+            raise BuildError(f"C payload sources[{index}] must be a non-empty string")
+        normalized.append(value)
+    return tuple(normalized)
+
+
 def compile_arm_c_payload(
     project_dir: Path,
-    source: str,
+    source: str | None,
     *,
     load_address: int,
     capacity: int,
     tools: ToolsConfig,
     job_index: int,
+    sources: Sequence[str] | None = None,
     link_symbols: dict[str, int] | None = None,
     thumb_link_symbols: dict[str, int] | None = None,
 ) -> CCompileResult:
@@ -140,9 +159,13 @@ def compile_arm_c_payload(
             f"C symbol cannot be both direct and Thumb-interworked: {sorted(overlap)[0]}"
         )
 
-    source_path = resolve_inside(project, source)
-    if not source_path.is_file():
-        raise BuildError(f"C payload source does not exist: {source}")
+    source_names = _normalize_sources(source, sources)
+    source_paths: list[Path] = []
+    for name in source_names:
+        source_path = resolve_inside(project, name)
+        if not source_path.is_file():
+            raise BuildError(f"C payload source does not exist: {name}")
+        source_paths.append(source_path)
 
     clang = resolve_clang(project, tools.clang)
     ld_lld = resolve_ld_lld(project, tools.ld_lld)
@@ -154,7 +177,6 @@ def compile_arm_c_payload(
         shutil.rmtree(job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    object_path = job_dir / "payload.o"
     veneer_source_path = job_dir / "thumb_veneers.s"
     veneer_object_path = job_dir / "thumb_veneers.o"
     elf_path = job_dir / "payload.elf"
@@ -162,34 +184,37 @@ def compile_arm_c_payload(
     linker_path = job_dir / "payload.ld"
     linker_path.write_text(_linker_script(load_address, link_symbols), encoding="utf-8")
 
-    compile_result = run_capture(
-        [
-            clang,
-            "--target=arm-none-eabi",
-            "-mcpu=arm946e-s",
-            "-marm",
-            "-Oz",
-            "-ffreestanding",
-            "-fno-builtin",
-            "-fno-stack-protector",
-            "-fno-unwind-tables",
-            "-fno-asynchronous-unwind-tables",
-            "-fno-pic",
-            "-fno-pie",
-            "-ffunction-sections",
-            "-fdata-sections",
-            "-fno-common",
-            "-nostdlib",
-            "-c",
-            source_path,
-            "-o",
-            object_path,
-        ],
-        cwd=job_dir,
-    )
-    _require_success(compile_result, "clang C compilation")
+    link_objects: list[Path] = []
+    for index, source_path in enumerate(source_paths):
+        object_path = job_dir / f"payload_{index:03d}.o"
+        compile_result = run_capture(
+            [
+                clang,
+                "--target=arm-none-eabi",
+                "-mcpu=arm946e-s",
+                "-marm",
+                "-Oz",
+                "-ffreestanding",
+                "-fno-builtin",
+                "-fno-stack-protector",
+                "-fno-unwind-tables",
+                "-fno-asynchronous-unwind-tables",
+                "-fno-pic",
+                "-fno-pie",
+                "-ffunction-sections",
+                "-fdata-sections",
+                "-fno-common",
+                "-nostdlib",
+                "-c",
+                source_path,
+                "-o",
+                object_path,
+            ],
+            cwd=job_dir,
+        )
+        _require_success(compile_result, f"clang C compilation ({source_names[index]})")
+        link_objects.append(object_path)
 
-    link_objects: list[Path] = [object_path]
     veneer_source = _thumb_veneer_source(thumb_link_symbols)
     if veneer_source:
         veneer_source_path.write_text(veneer_source, encoding="utf-8")
