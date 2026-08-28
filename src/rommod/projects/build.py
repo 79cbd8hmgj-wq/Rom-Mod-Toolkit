@@ -16,6 +16,7 @@ from rommod.errors import BuildError, TargetNotFoundError
 from rommod.platforms.nds.assembler import ArmipsRunResult, run_armips_change
 from rommod.platforms.nds.binaries import get_main_binary
 from rommod.platforms.nds.bytepatch import apply_byte_change
+from rommod.platforms.nds.c_injection import CInjectionRunResult, run_c_inject_change
 from rommod.platforms.nds.filesystem import replace_file
 from rommod.platforms.nds.injection import InjectionRunResult, run_inject_change
 from rommod.platforms.nds.overlays import get_overlay_raw
@@ -25,6 +26,7 @@ from rommod.projects.manifest import (
     ArmipsChange,
     BytePatchChange,
     Change,
+    CInjectChange,
     FileReplaceChange,
     InjectChange,
     ProjectManifest,
@@ -88,6 +90,8 @@ def _canonical_target(change: Change) -> str:
         return change.target
     if isinstance(change, InjectChange):
         return change.target
+    if isinstance(change, CInjectChange):
+        return change.target
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
 
@@ -97,7 +101,7 @@ def _apply_change(
     manifest: ProjectManifest,
     change: Change,
     index: int,
-) -> ArmipsRunResult | InjectionRunResult | None:
+) -> ArmipsRunResult | InjectionRunResult | CInjectionRunResult | None:
     if isinstance(change, FileReplaceChange):
         source_path = resolve_inside(project, change.source)
         if not source_path.is_file():
@@ -121,6 +125,14 @@ def _apply_change(
             project,
             change,
             manifest.tools.armips,
+            index,
+        )
+    if isinstance(change, CInjectChange):
+        return run_c_inject_change(
+            rom,
+            project,
+            change,
+            manifest.tools,
             index,
         )
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
@@ -165,6 +177,21 @@ def _change_report(change: Change) -> dict[str, object]:
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         return result
+    if isinstance(change, CInjectChange):
+        result = {
+            "type": change.type,
+            "target": change.target,
+            "symbol_file": change.symbol_file,
+            "hook": change.hook,
+            "expected": change.expected.hex(" ").upper(),
+            "source": change.source,
+            "cave": change.cave,
+            "reserve": change.reserve,
+            "fill": f"{change.fill:02X}",
+        }
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
+        return result
     if isinstance(change, InjectChange):
         result = {
             "type": change.type,
@@ -192,7 +219,7 @@ def _write_report(
     manifest: ProjectManifest,
     output_bytes: bytes,
     output_sha256: str,
-    assembly_runs: list[ArmipsRunResult | InjectionRunResult],
+    assembly_runs: list[ArmipsRunResult | InjectionRunResult | CInjectionRunResult],
 ) -> Path:
     report_path = resolve_inside(project, "reports/build.json")
     report = {
@@ -221,6 +248,26 @@ def _write_report(
             }
             for run in injection_runs
         ]
+    c_injection_runs = [run for run in assembly_runs if isinstance(run, CInjectionRunResult)]
+    if c_injection_runs:
+        report["c_injections"] = [
+            {
+                "target": run.target,
+                "hook_address": run.hook_address,
+                "cave_address": run.cave_address,
+                "code_address": run.code_address,
+                "reserve": run.reserve,
+                "payload_size": run.payload_size,
+            }
+            for run in c_injection_runs
+        ]
+        c_run = c_injection_runs[-1]
+        report["tools"]["clang"] = {"path": str(c_run.clang), "version": c_run.clang_version}
+        report["tools"]["ld_lld"] = {"path": str(c_run.ld_lld), "version": c_run.lld_version}
+        report["tools"]["llvm_objcopy"] = {
+            "path": str(c_run.llvm_objcopy),
+            "version": c_run.objcopy_version,
+        }
     if assembly_runs:
         run = assembly_runs[-1]
         report["tools"]["armips"] = {
@@ -241,7 +288,7 @@ def build_project(project_dir: Path) -> BuildResult:
     rom = NdsRom.load(source)
     _clean_work_dir(project)
 
-    assembly_runs: list[ArmipsRunResult | InjectionRunResult] = []
+    assembly_runs: list[ArmipsRunResult | InjectionRunResult | CInjectionRunResult] = []
     for index, change in enumerate(manifest.changes):
         assembly_run = _apply_change(rom, project, manifest, change, index)
         if assembly_run is not None:
