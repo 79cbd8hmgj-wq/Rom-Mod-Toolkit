@@ -40,9 +40,7 @@ def _require_success(result, stage: str) -> None:
     if result.returncode == 0:
         return
     diagnostics = (result.stdout + "\n" + result.stderr).strip()
-    raise ExternalToolError(
-        f"{stage} failed with exit code {result.returncode}: {diagnostics}"
-    )
+    raise ExternalToolError(f"{stage} failed with exit code {result.returncode}: {diagnostics}")
 
 
 def _validate_link_symbol(name: str, address: int, *, kind: str) -> None:
@@ -80,17 +78,15 @@ def _thumb_veneer_source(thumb_link_symbols: dict[str, int] | None) -> str:
         if lowered in seen:
             raise BuildError(f"duplicate C Thumb symbol name {name!r}")
         seen.add(lowered)
-        lines.extend(
-            [
-                f'.section .text.__rommod_thumb_{name},"ax",%progbits',
-                f".global {name}",
-                f".type {name},%function",
-                f"{name}:",
-                "  ldr r12, [pc, #0]",
-                "  bx r12",
-                f"  .word 0x{(address | 1):08X}",
-            ]
-        )
+        lines.extend([
+            f'.section .text.__rommod_thumb_{name},"ax",%progbits',
+            f".global {name}",
+            f".type {name},%function",
+            f"{name}:",
+            "  ldr r12, [pc, #0]",
+            "  bx r12",
+            f"  .word 0x{(address | 1):08X}",
+        ])
     return "\n".join(lines) + "\n"
 
 
@@ -133,6 +129,20 @@ def _normalize_sources(source: str | None, sources: Sequence[str] | None) -> tup
     return tuple(normalized)
 
 
+def _resolve_include_dirs(project: Path, include_dirs: Sequence[str] | None) -> tuple[Path, ...]:
+    if not include_dirs:
+        return ()
+    resolved: list[Path] = []
+    for index, value in enumerate(include_dirs):
+        if not isinstance(value, str) or not value:
+            raise BuildError(f"C include_dirs[{index}] must be a non-empty string")
+        path = resolve_inside(project, value)
+        if not path.is_dir():
+            raise BuildError(f"C include directory does not exist or is not a directory: {value}")
+        resolved.append(path)
+    return tuple(resolved)
+
+
 def compile_arm_c_payload(
     project_dir: Path,
     source: str | None,
@@ -142,6 +152,7 @@ def compile_arm_c_payload(
     tools: ToolsConfig,
     job_index: int,
     sources: Sequence[str] | None = None,
+    include_dirs: Sequence[str] | None = None,
     link_symbols: dict[str, int] | None = None,
     thumb_link_symbols: dict[str, int] | None = None,
 ) -> CCompileResult:
@@ -155,9 +166,7 @@ def compile_arm_c_payload(
     thumb_names = {name.lower() for name in (thumb_link_symbols or {})}
     overlap = direct_names & thumb_names
     if overlap:
-        raise BuildError(
-            f"C symbol cannot be both direct and Thumb-interworked: {sorted(overlap)[0]}"
-        )
+        raise BuildError(f"C symbol cannot be both direct and Thumb-interworked: {sorted(overlap)[0]}")
 
     source_names = _normalize_sources(source, sources)
     source_paths: list[Path] = []
@@ -166,6 +175,11 @@ def compile_arm_c_payload(
         if not source_path.is_file():
             raise BuildError(f"C payload source does not exist: {name}")
         source_paths.append(source_path)
+
+    include_paths = _resolve_include_dirs(project, include_dirs)
+    include_args: list[str | Path] = []
+    for include_path in include_paths:
+        include_args.extend(["-I", include_path])
 
     clang = resolve_clang(project, tools.clang)
     ld_lld = resolve_ld_lld(project, tools.ld_lld)
@@ -187,79 +201,68 @@ def compile_arm_c_payload(
     link_objects: list[Path] = []
     for index, source_path in enumerate(source_paths):
         object_path = job_dir / f"payload_{index:03d}.o"
-        compile_result = run_capture(
-            [
-                clang,
-                "--target=arm-none-eabi",
-                "-mcpu=arm946e-s",
-                "-marm",
-                "-Oz",
-                "-ffreestanding",
-                "-fno-builtin",
-                "-fno-stack-protector",
-                "-fno-unwind-tables",
-                "-fno-asynchronous-unwind-tables",
-                "-fno-pic",
-                "-fno-pie",
-                "-ffunction-sections",
-                "-fdata-sections",
-                "-fno-common",
-                "-nostdlib",
-                "-c",
-                source_path,
-                "-o",
-                object_path,
-            ],
-            cwd=job_dir,
-        )
+        compile_result = run_capture([
+            clang,
+            "--target=arm-none-eabi",
+            "-mcpu=arm946e-s",
+            "-marm",
+            "-Oz",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-unwind-tables",
+            "-fno-asynchronous-unwind-tables",
+            "-fno-pic",
+            "-fno-pie",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-fno-common",
+            "-nostdlib",
+            *include_args,
+            "-c",
+            source_path,
+            "-o",
+            object_path,
+        ], cwd=job_dir)
         _require_success(compile_result, f"clang C compilation ({source_names[index]})")
         link_objects.append(object_path)
 
     veneer_source = _thumb_veneer_source(thumb_link_symbols)
     if veneer_source:
         veneer_source_path.write_text(veneer_source, encoding="utf-8")
-        veneer_result = run_capture(
-            [
-                clang,
-                "--target=arm-none-eabi",
-                "-mcpu=arm946e-s",
-                "-marm",
-                "-c",
-                veneer_source_path,
-                "-o",
-                veneer_object_path,
-            ],
-            cwd=job_dir,
-        )
+        veneer_result = run_capture([
+            clang,
+            "--target=arm-none-eabi",
+            "-mcpu=arm946e-s",
+            "-marm",
+            "-c",
+            veneer_source_path,
+            "-o",
+            veneer_object_path,
+        ], cwd=job_dir)
         _require_success(veneer_result, "clang Thumb veneer assembly")
         link_objects.append(veneer_object_path)
 
-    link_result = run_capture(
-        [
-            ld_lld,
-            "--fatal-warnings",
-            "--gc-sections",
-            "-T",
-            linker_path,
-            *link_objects,
-            "-o",
-            elf_path,
-        ],
-        cwd=job_dir,
-    )
+    link_result = run_capture([
+        ld_lld,
+        "--fatal-warnings",
+        "--gc-sections",
+        "-T",
+        linker_path,
+        *link_objects,
+        "-o",
+        elf_path,
+    ], cwd=job_dir)
     _require_success(link_result, "LLD C payload link")
 
-    objcopy_result = run_capture(
-        [
-            llvm_objcopy,
-            "-O",
-            "binary",
-            "--only-section=.text",
-            elf_path,
-            binary_path,
-        ],
-        cwd=job_dir,
-    )
+    objcopy_result = run_capture([
+        llvm_objcopy,
+        "-O",
+        "binary",
+        "--only-section=.text",
+        elf_path,
+        binary_path,
+    ], cwd=job_dir)
     _require_success(objcopy_result, "llvm-objcopy C payload extraction")
 
     if not binary_path.is_file():
@@ -268,9 +271,7 @@ def compile_arm_c_payload(
     if not binary:
         raise ExternalToolError("compiled C payload is empty")
     if len(binary) > capacity:
-        raise BuildError(
-            f"compiled C payload is {len(binary)} bytes but only {capacity} bytes are available"
-        )
+        raise BuildError(f"compiled C payload is {len(binary)} bytes but only {capacity} bytes are available")
 
     return CCompileResult(
         binary=binary,
