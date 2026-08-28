@@ -1,4 +1,4 @@
-"""Symbol-aware, bounded ARM hook injection for NDS code targets."""
+"""Symbol-aware, bounded ARM/Thumb hook injection for NDS code targets."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from rommod.projects.manifest import InjectChange
 
 _INJECTION_POSITION_OR_MODE = re.compile(r"(?im)^\s*\.(?:org|orga|arm|thumb)\b")
 _RESERVED_LABEL = re.compile(r"(?i)\b__rommod_[A-Za-z0-9_]*")
+_LOW_THUMB_REGISTER = re.compile(r"^r[0-7]$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,9 @@ class InjectionRunResult:
     hook_address: int
     cave_address: int
     reserve: int
+    hook_mode: str
+    hook_size: int
+    scratch_register: str | None
 
 
 def validate_injection_fragment(source: str) -> None:
@@ -42,7 +46,7 @@ def validate_injection_fragment(source: str) -> None:
     if match:
         raise ExternalToolError(
             f"injection fragment construct {match.group(0)!r} is not allowed; "
-            "the toolkit owns hook/cave positions and ARM mode"
+            "the toolkit owns hook/cave positions and instruction mode"
         )
 
 
@@ -84,10 +88,9 @@ def _select_hook(project: Path, change: InjectChange, region):
             f"hook symbol {change.hook!r} is ambiguous in component {component!r}"
         )
     symbol = matches[0]
-    if symbol.instruction_set != "arm":
+    if symbol.instruction_set not in {"arm", "thumb"}:
         raise ExternalToolError(
-            f"hook symbol {change.hook!r} uses {symbol.instruction_set!r}; "
-            "this injection slice supports ARM hooks only"
+            f"hook symbol {change.hook!r} has no supported instruction set; expected 'arm' or 'thumb'"
         )
     expected_offset = symbol.address - region.ram_address.value
     if expected_offset != symbol.offset:
@@ -101,6 +104,109 @@ def _select_hook(project: Path, change: InjectChange, region):
 
 def _ranges_overlap(a_start: int, a_size: int, b_start: int, b_size: int) -> bool:
     return a_start < b_start + b_size and b_start < a_start + a_size
+
+
+def _thumb_short_reachable(hook_address: int, cave_address: int) -> bool:
+    displacement = cave_address - (hook_address + 4)
+    return displacement % 2 == 0 and -2048 <= displacement <= 2046
+
+
+def _require_expected(original: bytes, hook_offset: FileOffset, expected: bytes, hook_size: int) -> None:
+    if len(expected) != hook_size:
+        raise PatchMismatchError(
+            f"{hook_size}-byte hook requires exactly {hook_size} expected bytes, got {len(expected)}"
+        )
+    actual = original[hook_offset.value : hook_offset.value + hook_size]
+    if len(actual) != hook_size or actual != expected:
+        raise PatchMismatchError(
+            f"expected bytes {expected.hex(' ').upper()} at 0x{hook_offset.value:X}, "
+            f"found {actual.hex(' ').upper()}"
+        )
+
+
+def _select_hook_mode(change: InjectChange, instruction_set: str, hook_address: int, cave_address: int):
+    if instruction_set == "arm":
+        if change.scratch_register is not None:
+            raise BuildError("scratch_register is only valid for long Thumb hooks")
+        return "arm", 4, None
+
+    if _thumb_short_reachable(hook_address, cave_address):
+        if change.scratch_register is not None:
+            raise BuildError("scratch_register is unnecessary for a short Thumb hook")
+        return "thumb-short", 2, None
+
+    scratch = change.scratch_register
+    if scratch is None:
+        raise BuildError(
+            "Thumb hook cave is outside short-branch range; set scratch_register to a low register r0-r7"
+        )
+    if not _LOW_THUMB_REGISTER.fullmatch(scratch):
+        raise BuildError("Thumb long-hook scratch_register must be one of r0-r7")
+    if hook_address % 4:
+        raise BuildError("Thumb long-hook veneer currently requires a 4-byte-aligned hook address")
+    if change.reserve < 12:
+        raise BuildError("Thumb long-hook code cave reserve must be at least 12 bytes")
+    return "thumb-long", 8, scratch.lower()
+
+
+def _driver_source(
+    *,
+    architecture: str,
+    imported: str,
+    region_base: int,
+    hook_address: int,
+    cave_address: int,
+    reserve: int,
+    payload_label: str,
+    return_address: int,
+    hook_mode: str,
+    scratch_register: str | None,
+) -> str:
+    prefix = architecture + f'.open "target.bin",0x{region_base:08X}\n' + imported
+    if hook_mode == "arm":
+        return (
+            prefix
+            + f".org 0x{hook_address:08X}\n"
+            + f"b {payload_label}\n"
+            + f".org 0x{cave_address:08X}\n"
+            + f"{payload_label}:\n"
+            + '.include "payload.asm"\n'
+            + f"b 0x{return_address:08X}\n"
+            + ".close\n"
+        )
+    if hook_mode == "thumb-short":
+        return (
+            prefix
+            + ".thumb\n"
+            + f".org 0x{hook_address:08X}\n"
+            + f"b {payload_label}\n"
+            + f".org 0x{cave_address:08X}\n"
+            + f"{payload_label}:\n"
+            + '.include "payload.asm"\n'
+            + f"b 0x{return_address:08X}\n"
+            + ".close\n"
+        )
+
+    assert scratch_register is not None
+    return_stub = cave_address + reserve - 8
+    return (
+        prefix
+        + ".thumb\n"
+        + f".org 0x{hook_address:08X}\n"
+        + f"ldr {scratch_register}, [pc, #0]\n"
+        + f"bx {scratch_register}\n"
+        + f".word 0x{(cave_address | 1):08X}\n"
+        + f".org 0x{cave_address:08X}\n"
+        + f"{payload_label}:\n"
+        + '.include "payload.asm"\n'
+        + "b __rommod_return_stub\n"
+        + f".org 0x{return_stub:08X}\n"
+        + "__rommod_return_stub:\n"
+        + f"ldr {scratch_register}, [pc, #0]\n"
+        + f"bx {scratch_register}\n"
+        + f".word 0x{(return_address | 1):08X}\n"
+        + ".close\n"
+    )
 
 
 def run_inject_change(
@@ -120,14 +226,6 @@ def run_inject_change(
 
     architecture, region, original, setter = _target_state(rom, change.target)
     hook_symbol, hook_offset = _select_hook(project, change, region)
-    if len(change.expected) != 4:
-        raise PatchMismatchError("ARM hook expected bytes must be exactly 4 bytes")
-    actual = original[hook_offset.value : hook_offset.value + 4]
-    if actual != change.expected:
-        raise PatchMismatchError(
-            f"expected bytes {change.expected.hex(' ').upper()} at 0x{hook_offset.value:X}, "
-            f"found {actual.hex(' ').upper()}"
-        )
 
     if change.cave == "auto":
         cave_offset = find_trailing_fill_cave(
@@ -142,11 +240,16 @@ def run_inject_change(
         raise BuildError(
             f"code cave at 0x{cave_offset.value:X} does not match fill byte 0x{change.fill:02X}"
         )
-    if _ranges_overlap(hook_offset.value, 4, cave_offset.value, change.reserve):
-        raise BuildError("hook range overlaps reserved code cave")
 
     cave_address = file_offset_to_cpu(region, cave_offset).value
-    return_address = hook_symbol.address + 4
+    hook_mode, hook_size, scratch_register = _select_hook_mode(
+        change, hook_symbol.instruction_set, hook_symbol.address, cave_address
+    )
+    _require_expected(original, hook_offset, change.expected, hook_size)
+    if _ranges_overlap(hook_offset.value, hook_size, cave_offset.value, change.reserve):
+        raise BuildError("hook range overlaps reserved code cave")
+
+    return_address = hook_symbol.address + hook_size
     imported = _imported_symbol_directives(project, change, region)
 
     work_root = resolve_inside(project, "build/work/inject")
@@ -165,16 +268,18 @@ def run_inject_change(
 
     payload_label = f"__rommod_payload_{job_index:04d}"
     driver_path.write_text(
-        architecture
-        + f'.open "target.bin",0x{region.ram_address.value:08X}\n'
-        + imported
-        + f".org 0x{hook_symbol.address:08X}\n"
-        + f"b {payload_label}\n"
-        + f".org 0x{cave_address:08X}\n"
-        + f"{payload_label}:\n"
-        + '.include "payload.asm"\n'
-        + f"b 0x{return_address:08X}\n"
-        + ".close\n",
+        _driver_source(
+            architecture=architecture,
+            imported=imported,
+            region_base=region.ram_address.value,
+            hook_address=hook_symbol.address,
+            cave_address=cave_address,
+            reserve=change.reserve,
+            payload_label=payload_label,
+            return_address=return_address,
+            hook_mode=hook_mode,
+            scratch_register=scratch_register,
+        ),
         encoding="utf-8",
     )
 
@@ -203,7 +308,7 @@ def run_inject_change(
     for offset, (before, after) in enumerate(zip(original, patched)):
         if before == after:
             continue
-        in_hook = hook_offset.value <= offset < hook_offset.value + 4
+        in_hook = hook_offset.value <= offset < hook_offset.value + hook_size
         in_cave = cave_offset.value <= offset < cave_offset.value + change.reserve
         if not (in_hook or in_cave):
             raise ExternalToolError(
@@ -228,4 +333,7 @@ def run_inject_change(
         hook_address=hook_symbol.address,
         cave_address=cave_address,
         reserve=change.reserve,
+        hook_mode=hook_mode,
+        hook_size=hook_size,
+        scratch_register=scratch_register,
     )
