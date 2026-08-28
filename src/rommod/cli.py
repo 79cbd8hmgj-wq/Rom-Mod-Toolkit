@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rommod.platforms.nds.extract import extract_project
 from rommod.platforms.nds.rom import NdsRom
+from rommod.projects.build import build_project
 from rommod.projects.manifest import load_manifest
 from rommod.projects.project import init_project, verify_source
 
@@ -26,6 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     extract_parser = subparsers.add_parser("extract", help="extract an NDS project snapshot")
     extract_parser.add_argument("project", type=Path)
+
+    build_cmd = subparsers.add_parser("build", help="build an NDS mod project")
+    build_cmd.add_argument("project", type=Path)
     return parser
 
 
@@ -49,6 +53,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "extract":
         print(json.dumps(extract_project(args.project), indent=2, sort_keys=True))
+        return 0
+    if args.command == "build":
+        result = build_project(args.project)
+        print(
+            json.dumps(
+                {
+                    "output": str(result.output_path),
+                    "report": str(result.report_path),
+                    "sha256": result.output_sha256,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     parser.print_help()
     return 0
