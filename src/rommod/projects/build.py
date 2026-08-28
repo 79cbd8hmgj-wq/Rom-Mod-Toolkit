@@ -184,11 +184,14 @@ def _change_report(change: Change) -> dict[str, object]:
             "symbol_file": change.symbol_file,
             "hook": change.hook,
             "expected": change.expected.hex(" ").upper(),
-            "source": change.source,
             "cave": change.cave,
             "reserve": change.reserve,
             "fill": f"{change.fill:02X}",
         }
+        if change.source is not None:
+            result["source"] = change.source
+        else:
+            result["sources"] = list(change.sources)
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
