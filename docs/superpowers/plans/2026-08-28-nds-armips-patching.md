@@ -1,6 +1,6 @@
 # NDS armips Patching Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add safe armips-backed ARM/Thumb modification jobs for NDS ARM9, ARM7, and overlay targets while preserving the Phase 1 source-lock, mutation-accounting, rebuild, and validation guarantees.
 
@@ -30,37 +30,37 @@
 
 **Files:** modify `manifest.py`; create `core/subprocesses.py`; tests `test_armips_manifest.py`, `test_subprocesses.py`.
 
-- [ ] Add failing tests for `tools.armips`, `ArmipsChange`, YAML round-trip, configured/env/PATH resolution, and missing tool.
-- [ ] Run focused tests and verify failure from missing symbols/modules.
-- [ ] Implement frozen `ToolsConfig`/`ArmipsChange` and strict parsing/serialization.
-- [ ] Implement executable resolution plus captured subprocess execution.
-- [ ] Run focused tests and full suite.
+- [x] Add failing tests for `tools.armips`, `ArmipsChange`, YAML round-trip, configured/env/PATH resolution, and missing tool.
+- [x] Run focused tests and verify failure from missing symbols/modules.
+- [x] Implement frozen `ToolsConfig`/`ArmipsChange` and strict parsing/serialization.
+- [x] Implement executable resolution plus captured subprocess execution.
+- [x] Run focused tests and full suite.
 
 ### Task 2: Isolated NDS armips job
 
 **Files:** create `platforms/nds/assembler.py`; tests `test_armips.py` and real integration coverage.
 
-- [ ] Write failing tests for forbidden directives, target selection, ARM9 real patch, symbols, ARM7 architecture, and missing tool.
-- [ ] Generate isolated wrapper scripts and target copies under `build/work/armips/<index>/`.
-- [ ] Invoke armips with `-erroronwarning`, optional `-sym`, and `-temp` diagnostics.
-- [ ] Reject nonzero exit, missing target, and target size changes.
-- [ ] Return tool/version/symbol data without writing final project artifacts yet.
+- [x] Write failing tests for forbidden directives, target selection, ARM9 real patch, symbols, ARM7 architecture, and missing tool.
+- [x] Generate isolated wrapper scripts and target copies under `build/work/armips/<index>/`.
+- [x] Invoke armips with `-erroronwarning`, optional `-sym`, and `-temp` diagnostics.
+- [x] Reject nonzero exit, missing target, and target size changes.
+- [x] Return tool/version/symbol data without writing final project artifacts yet.
 
 ### Task 3: Build-pipeline integration
 
 **Files:** modify `projects/build.py`; integration `test_build_armips.py`.
 
-- [ ] Apply `ArmipsChange` in manifest order and include its target in post-rebuild verification.
-- [ ] Commit patched bytes back into the in-memory NDS target.
-- [ ] Atomically write requested symbol files only after rebuilt ROM validation succeeds.
-- [ ] Record armips mutation metadata and tool path/version in `reports/build.json`.
-- [ ] Verify failed assembler jobs do not produce the configured output.
+- [x] Apply `ArmipsChange` in manifest order and include its target in post-rebuild verification.
+- [x] Commit patched bytes back into the in-memory NDS target.
+- [x] Atomically write requested symbol files only after rebuilt ROM validation succeeds.
+- [x] Record armips mutation metadata and tool path/version in `reports/build.json`.
+- [x] Verify failed assembler jobs do not produce the configured output.
 
 ### Task 4: CLI/docs/final verification
 
 **Files:** update `README.md`; retain existing CLI surface (`rommod build`).
 
-- [ ] Document armips discovery, fragment contract, target syntax, CPU-address usage, ARM/Thumb mode changes, and symbol output.
-- [ ] Build the uploaded armips source locally when possible and run real integration tests with `ROMMOD_ARMIPS` pointed at that binary.
-- [ ] Run `compileall` and the complete pytest suite.
-- [ ] Run a manual synthetic project smoke test with an actual armips fragment and verify patched bytes plus symbols in the rebuilt ROM.
+- [x] Document armips discovery, fragment contract, target syntax, CPU-address usage, ARM/Thumb mode changes, and symbol output.
+- [x] Build the uploaded armips source locally when possible and run real integration tests with `ROMMOD_ARMIPS` pointed at that binary.
+- [x] Run `compileall` and the complete pytest suite.
+- [x] Run a manual synthetic project smoke test with an actual armips fragment and verify patched bytes plus symbols in the rebuilt ROM.
