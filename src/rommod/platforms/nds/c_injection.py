@@ -179,6 +179,7 @@ def run_c_inject_change(
     compile_result: CCompileResult = compile_arm_c_payload(
         project,
         change.source,
+        sources=change.sources,
         load_address=code_address,
         capacity=change.reserve - prefix_size,
         tools=tools,
