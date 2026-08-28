@@ -28,6 +28,9 @@ class OutputConfig:
 @dataclass(frozen=True)
 class ToolsConfig:
     armips: str | None = None
+    clang: str | None = None
+    ld_lld: str | None = None
+    llvm_objcopy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,7 +75,21 @@ class InjectChange:
     type: Literal["inject"] = "inject"
 
 
-Change: TypeAlias = FileReplaceChange | BytePatchChange | ArmipsChange | InjectChange
+@dataclass(frozen=True)
+class CInjectChange:
+    target: str
+    symbol_file: str
+    hook: str
+    expected: bytes
+    source: str
+    cave: str | int
+    reserve: int
+    fill: int = 0
+    symbol_component: str | None = None
+    type: Literal["c_inject"] = "c_inject"
+
+
+Change: TypeAlias = FileReplaceChange | BytePatchChange | ArmipsChange | InjectChange | CInjectChange
 
 
 @dataclass(frozen=True)
@@ -190,6 +207,24 @@ def _parse_change(value: object, index: int) -> Change:
             symbol_file=_optional_str(mapping, "symbol_file", field),
             symbol_component=_optional_str(mapping, "symbol_component", field),
         )
+    if kind == "c_inject":
+        expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
+        if len(expected) != 4:
+            raise ManifestError(f"{field}.expected must contain exactly 4 bytes for an ARM C hook")
+        reserve = _parse_positive_int(mapping.get("reserve"), f"{field}.reserve")
+        if reserve % 4:
+            raise ManifestError(f"{field}.reserve must be a multiple of 4")
+        return CInjectChange(
+            target=_require_str(mapping, "target", field),
+            symbol_file=_require_str(mapping, "symbol_file", field),
+            hook=_require_str(mapping, "hook", field),
+            expected=expected,
+            source=_require_str(mapping, "source", field),
+            cave=_parse_cave(mapping.get("cave"), f"{field}.cave"),
+            reserve=reserve,
+            fill=_parse_fill_byte(mapping.get("fill", "00"), f"{field}.fill"),
+            symbol_component=_optional_str(mapping, "symbol_component", field),
+        )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
         if len(expected) not in (2, 4, 8):
@@ -235,7 +270,12 @@ def _from_mapping(data: object) -> ProjectManifest:
 
     raw_tools = root.get("tools", {})
     tools_map = _require_mapping(raw_tools, "tools")
-    tools = ToolsConfig(armips=_optional_str(tools_map, "armips", "tools"))
+    tools = ToolsConfig(
+        armips=_optional_str(tools_map, "armips", "tools"),
+        clang=_optional_str(tools_map, "clang", "tools"),
+        ld_lld=_optional_str(tools_map, "ld_lld", "tools"),
+        llvm_objcopy=_optional_str(tools_map, "llvm_objcopy", "tools"),
+    )
 
     raw_changes = root.get("changes", [])
     if not isinstance(raw_changes, list):
@@ -261,6 +301,21 @@ def _change_to_mapping(change: Change) -> dict:
             result["symbols"] = change.symbols
         if change.symbol_file is not None:
             result["symbol_file"] = change.symbol_file
+        if change.symbol_component is not None:
+            result["symbol_component"] = change.symbol_component
+        return result
+    if isinstance(change, CInjectChange):
+        result = {
+            "type": change.type,
+            "target": change.target,
+            "symbol_file": change.symbol_file,
+            "hook": change.hook,
+            "expected": change.expected.hex(" ").upper(),
+            "source": change.source,
+            "cave": change.cave if change.cave == "auto" else f"0x{change.cave:X}",
+            "reserve": change.reserve,
+            "fill": f"{change.fill:02X}",
+        }
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         return result
@@ -305,8 +360,15 @@ def write_manifest(project_dir: Path, manifest: ProjectManifest) -> None:
         "output": {"rom": manifest.output.rom},
         "changes": [_change_to_mapping(change) for change in manifest.changes],
     }
-    if manifest.tools.armips is not None:
-        root["tools"] = {"armips": manifest.tools.armips}
+    tool_values = {
+        "armips": manifest.tools.armips,
+        "clang": manifest.tools.clang,
+        "ld_lld": manifest.tools.ld_lld,
+        "llvm_objcopy": manifest.tools.llvm_objcopy,
+    }
+    configured_tools = {key: value for key, value in tool_values.items() if value is not None}
+    if configured_tools:
+        root["tools"] = configured_tools
     path = Path(project_dir) / "rommod.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(root, sort_keys=False), encoding="utf-8")
