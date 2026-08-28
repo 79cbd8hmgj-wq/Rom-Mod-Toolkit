@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rom-mod-toolkit"
+version = "0.1.0"
+description = "Reproducible ROM modification toolkit with an NDS-first platform adapter"
+requires-python = ">=3.10"
+dependencies = ["ndspy==4.2.0", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+rommod = "rommod.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
