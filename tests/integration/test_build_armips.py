@@ -77,3 +77,171 @@ def test_missing_armips_does_not_write_output(synthetic_rom_path: Path, tmp_path
     with pytest.raises(ExternalToolError, match="armips"):
         build_project(project)
     assert not (project / "build/output/synthetic-modded.nds").exists()
+
+
+def test_build_uses_component_aware_imported_symbol(synthetic_rom_path: Path, tmp_path: Path):
+    armips = _real_armips()
+    project = tmp_path / "mod"
+    manifest = init_project(synthetic_rom_path, project)
+    (project / "analysis").mkdir()
+    (project / "analysis/symbols.json").write_text(
+        json.dumps(
+            {
+                "symbols": [
+                    {
+                        "component": "battle_overlay",
+                        "address": 0x02100004,
+                        "offset": 4,
+                        "name": "PatchSite",
+                        "kind": "function",
+                        "instruction_set": "arm",
+                        "confidence": "high",
+                        "evidence": ["test"],
+                    },
+                    {
+                        "component": "other_overlay",
+                        "address": 0x02100004,
+                        "offset": 4,
+                        "name": "OtherPatchSite",
+                        "kind": "function",
+                        "instruction_set": "thumb",
+                        "confidence": "high",
+                        "evidence": ["test"],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project / "asm/patch.asm").write_text(
+        ".org PatchSite\n.word 0xAABBCCDD\n",
+        encoding="utf-8",
+    )
+    manifest = replace(
+        manifest,
+        changes=(
+            ArmipsChange(
+                target="overlay9:0",
+                script="asm/patch.asm",
+                symbol_file="analysis/symbols.json",
+                symbol_component="battle_overlay",
+            ),
+        ),
+        tools=ToolsConfig(armips=armips),
+    )
+    write_manifest(project, manifest)
+
+    result = build_project(project)
+    rebuilt = NdsRom.load(result.output_path)
+    assert get_overlay_raw(rebuilt, "arm9", 0)[4:8] == bytes.fromhex("DD CC BB AA")
+
+
+def test_symbol_import_rejects_wrong_component_offset(synthetic_rom_path: Path, tmp_path: Path):
+    armips = _real_armips()
+    project = tmp_path / "mod"
+    manifest = init_project(synthetic_rom_path, project)
+    (project / "analysis").mkdir()
+    (project / "analysis/symbols.json").write_text(
+        json.dumps(
+            [
+                {
+                    "component": "arm9",
+                    "address": 0x02000008,
+                    "offset": 4,
+                    "name": "BadSite",
+                    "kind": "function",
+                    "instruction_set": "arm",
+                    "confidence": "high",
+                    "evidence": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (project / "asm/patch.asm").write_text(".org BadSite\n.word 0\n", encoding="utf-8")
+    manifest = replace(
+        manifest,
+        changes=(
+            ArmipsChange(
+                target="arm9",
+                script="asm/patch.asm",
+                symbol_file="analysis/symbols.json",
+            ),
+        ),
+        tools=ToolsConfig(armips=armips),
+    )
+    write_manifest(project, manifest)
+    with pytest.raises(ExternalToolError, match="offset"):
+        build_project(project)
+
+
+@pytest.mark.parametrize(
+    ("name", "records", "message"),
+    [
+        (
+            "unsafe",
+            [
+                {
+                    "component": "arm9",
+                    "address": 0x02000004,
+                    "offset": 4,
+                    "name": "Bad Name",
+                    "kind": "function",
+                    "instruction_set": "arm",
+                    "confidence": "high",
+                    "evidence": [],
+                }
+            ],
+            "identifier",
+        ),
+        (
+            "duplicate",
+            [
+                {
+                    "component": "arm9",
+                    "address": 0x02000004,
+                    "offset": 4,
+                    "name": "SameName",
+                    "kind": "function",
+                    "instruction_set": "arm",
+                    "confidence": "high",
+                    "evidence": [],
+                },
+                {
+                    "component": "arm9",
+                    "address": 0x02000008,
+                    "offset": 8,
+                    "name": "SameName",
+                    "kind": "label",
+                    "instruction_set": "arm",
+                    "confidence": "high",
+                    "evidence": [],
+                },
+            ],
+            "duplicate",
+        ),
+    ],
+)
+def test_symbol_import_rejects_unsafe_or_duplicate_names(
+    synthetic_rom_path: Path,
+    tmp_path: Path,
+    name: str,
+    records: list[dict],
+    message: str,
+):
+    armips = _real_armips()
+    project = tmp_path / f"mod-{name}"
+    manifest = init_project(synthetic_rom_path, project)
+    (project / "analysis").mkdir()
+    (project / "analysis/symbols.json").write_text(json.dumps(records), encoding="utf-8")
+    (project / "asm/patch.asm").write_text(".org 0x02000000\n.word 0\n", encoding="utf-8")
+    manifest = replace(
+        manifest,
+        changes=(
+            ArmipsChange(target="arm9", script="asm/patch.asm", symbol_file="analysis/symbols.json"),
+        ),
+        tools=ToolsConfig(armips=armips),
+    )
+    write_manifest(project, manifest)
+    with pytest.raises(ExternalToolError, match=message):
+        build_project(project)
