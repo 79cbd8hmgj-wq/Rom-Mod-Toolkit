@@ -51,3 +51,22 @@ changes:
     change = load_manifest(tmp_path).changes[0]
     assert isinstance(change, ArmipsChange)
     assert change.symbols is None
+
+
+def test_armips_symbol_import_round_trip(tmp_path: Path):
+    manifest = ProjectManifest(
+        schema_version=1,
+        platform="nds",
+        source=SourceConfig(rom="../game.nds", sha256="a" * 64),
+        output=OutputConfig(rom="build/output/game.nds"),
+        changes=(
+            ArmipsChange(
+                target="overlay9:0",
+                script="asm/patch.asm",
+                symbol_file="analysis/symbols.json",
+                symbol_component="battle_overlay",
+            ),
+        ),
+    )
+    write_manifest(tmp_path, manifest)
+    assert load_manifest(tmp_path) == manifest
