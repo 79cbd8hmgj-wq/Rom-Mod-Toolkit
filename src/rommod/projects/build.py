@@ -13,6 +13,7 @@ from rommod.core.atomic import atomic_write_bytes
 from rommod.core.hashes import sha256_file
 from rommod.core.paths import resolve_inside
 from rommod.errors import BuildError, TargetNotFoundError
+from rommod.platforms.nds.assembler import ArmipsRunResult, run_armips_change
 from rommod.platforms.nds.binaries import get_main_binary
 from rommod.platforms.nds.bytepatch import apply_byte_change
 from rommod.platforms.nds.filesystem import replace_file
@@ -20,6 +21,7 @@ from rommod.platforms.nds.overlays import get_overlay_raw
 from rommod.platforms.nds.rom import NdsRom
 from rommod.platforms.nds.validation import validate_nds_bytes
 from rommod.projects.manifest import (
+    ArmipsChange,
     BytePatchChange,
     Change,
     FileReplaceChange,
@@ -80,19 +82,35 @@ def _canonical_target(change: Change) -> str:
         return f"file:{_normalized_file_path(change.target)}"
     if isinstance(change, BytePatchChange):
         return change.target
+    if isinstance(change, ArmipsChange):
+        return change.target
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
 
-def _apply_change(rom: NdsRom, project: Path, change: Change) -> None:
+def _apply_change(
+    rom: NdsRom,
+    project: Path,
+    manifest: ProjectManifest,
+    change: Change,
+    index: int,
+) -> ArmipsRunResult | None:
     if isinstance(change, FileReplaceChange):
         source_path = resolve_inside(project, change.source)
         if not source_path.is_file():
             raise BuildError(f"Replacement file does not exist: {change.source}")
         replace_file(rom, change.target, source_path.read_bytes())
-        return
+        return None
     if isinstance(change, BytePatchChange):
         apply_byte_change(rom, change)
-        return
+        return None
+    if isinstance(change, ArmipsChange):
+        return run_armips_change(
+            rom,
+            project,
+            change,
+            manifest.tools.armips,
+            index,
+        )
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
 
@@ -122,6 +140,15 @@ def _change_report(change: Change) -> dict[str, object]:
             "expected": change.expected.hex(" ").upper(),
             "replacement": change.replacement.hex(" ").upper(),
         }
+    if isinstance(change, ArmipsChange):
+        result: dict[str, object] = {
+            "type": change.type,
+            "target": change.target,
+            "script": change.script,
+        }
+        if change.symbols is not None:
+            result["symbols"] = change.symbols
+        return result
     raise BuildError(f"Unsupported change object: {type(change).__name__}")
 
 
@@ -130,6 +157,7 @@ def _write_report(
     manifest: ProjectManifest,
     output_bytes: bytes,
     output_sha256: str,
+    armips_runs: list[ArmipsRunResult],
 ) -> Path:
     report_path = resolve_inside(project, "reports/build.json")
     report = {
@@ -144,6 +172,12 @@ def _write_report(
             "ndspy": f"{NDSPY_VERSION.major}.{NDSPY_VERSION.minor}.{NDSPY_VERSION.patch}"
         },
     }
+    if armips_runs:
+        run = armips_runs[-1]
+        report["tools"]["armips"] = {
+            "path": str(run.executable),
+            "version": run.version,
+        }
     atomic_write_bytes(
         report_path,
         (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8"),
@@ -158,8 +192,11 @@ def build_project(project_dir: Path) -> BuildResult:
     rom = NdsRom.load(source)
     _clean_work_dir(project)
 
-    for change in manifest.changes:
-        _apply_change(rom, project, change)
+    armips_runs: list[ArmipsRunResult] = []
+    for index, change in enumerate(manifest.changes):
+        armips_run = _apply_change(rom, project, manifest, change, index)
+        if armips_run is not None:
+            armips_runs.append(armips_run)
 
     expected_targets = _snapshot_touched_targets(rom, manifest)
     output_bytes = rom.serialize()
@@ -167,8 +204,12 @@ def build_project(project_dir: Path) -> BuildResult:
     rebuilt = NdsRom.from_bytes(output_bytes)
     _verify_touched_targets(rebuilt, expected_targets)
 
+    for armips_run in armips_runs:
+        if armips_run.symbol_destination is not None and armips_run.symbol_bytes is not None:
+            atomic_write_bytes(armips_run.symbol_destination, armips_run.symbol_bytes)
+
     output_path = resolve_inside(project, manifest.output.rom)
     atomic_write_bytes(output_path, output_bytes)
     output_sha256 = sha256_file(output_path)
-    report_path = _write_report(project, manifest, output_bytes, output_sha256)
+    report_path = _write_report(project, manifest, output_bytes, output_sha256, armips_runs)
     return BuildResult(output_path, manifest.source.sha256, output_sha256, report_path)
