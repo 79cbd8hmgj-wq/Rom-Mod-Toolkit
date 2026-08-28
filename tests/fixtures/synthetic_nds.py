@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ndspy import fnt
+from ndspy import code, fnt
 from ndspy.rom import NintendoDSRom
 
 
@@ -23,8 +23,20 @@ def make_synthetic_nds() -> bytes:
         files=[],
         firstID=0,
     )
-    rom.files = [b"original-data"]
-    rom.sortedFileIds = [0]
+    overlay = code.Overlay(
+        bytes(range(0xA0, 0xB0)),
+        ramAddress=0x02100000,
+        ramSize=16,
+        bssSize=4,
+        staticInitStart=0x02100000,
+        staticInitEnd=0x02100004,
+        fileID=1,
+        compressedSize=16,
+        flags=0,
+    )
+    rom.arm9OverlayTable = code.saveOverlayTable({0: overlay})
+    rom.files = [b"original-data", overlay.save(compress=False)]
+    rom.sortedFileIds = [0, 1]
     return rom.save()
 
 
