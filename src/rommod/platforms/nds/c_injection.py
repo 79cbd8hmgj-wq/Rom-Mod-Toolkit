@@ -81,11 +81,7 @@ def _driver_source(
         )
 
     if hook_mode == "thumb-short":
-        hook = (
-            ".thumb\n"
-            + f".org 0x{hook_address:08X}\n"
-            + f"b {wrapper_label}\n"
-        )
+        hook = ".thumb\n" + f".org 0x{hook_address:08X}\n" + f"b {wrapper_label}\n"
     else:
         assert scratch_register is not None
         hook = (
@@ -156,8 +152,7 @@ def run_c_inject_change(
     prefix_size = _wrapper_prefix_size(hook_mode)
     if change.reserve <= prefix_size:
         raise BuildError(
-            f"C injection reserve must leave space after the {prefix_size}-byte "
-            f"{hook_mode} bridge"
+            f"C injection reserve must leave space after the {prefix_size}-byte {hook_mode} bridge"
         )
     code_address = cave_address + prefix_size
 
@@ -180,6 +175,7 @@ def run_c_inject_change(
         project,
         change.source,
         sources=change.sources,
+        include_dirs=change.include_dirs,
         load_address=code_address,
         capacity=change.reserve - prefix_size,
         tools=tools,
@@ -228,8 +224,7 @@ def run_c_inject_change(
     if result.returncode != 0:
         diagnostics = (result.stdout + "\n" + result.stderr).strip()
         raise ExternalToolError(
-            f"armips C injection failed for {change.target} with exit code "
-            f"{result.returncode}: {diagnostics}"
+            f"armips C injection failed for {change.target} with exit code {result.returncode}: {diagnostics}"
         )
 
     patched = target_path.read_bytes()
