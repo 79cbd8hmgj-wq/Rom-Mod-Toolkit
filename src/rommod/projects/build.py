@@ -258,6 +258,7 @@ def _write_report(
                 "code_address": run.code_address,
                 "reserve": run.reserve,
                 "payload_size": run.payload_size,
+                "thumb_interworking": run.thumb_interworking,
             }
             for run in c_injection_runs
         ]
