@@ -32,6 +32,7 @@ class CCompileResult:
     clang_version: str
     lld_version: str
     objcopy_version: str
+    thumb_interworking: bool = False
 
 
 def _require_success(result, stage: str) -> None:
@@ -43,23 +44,52 @@ def _require_success(result, stage: str) -> None:
     )
 
 
+def _validate_link_symbol(name: str, address: int, *, kind: str) -> None:
+    if not isinstance(name, str) or not _LINK_SYMBOL.fullmatch(name):
+        raise BuildError(f"C {kind} symbol name {name!r} is not a safe identifier")
+    if name == "rommod_payload":
+        raise BuildError("C link symbol 'rommod_payload' is reserved by the toolkit")
+    if not isinstance(address, int) or isinstance(address, bool) or not 0 <= address <= 0xFFFFFFFF:
+        raise BuildError(f"C {kind} symbol {name!r} must use a 32-bit non-negative address")
+
+
 def _validated_link_symbol_lines(link_symbols: dict[str, int] | None) -> str:
     if not link_symbols:
         return ""
     lines: list[str] = []
     seen: set[str] = set()
     for name, address in link_symbols.items():
-        if not isinstance(name, str) or not _LINK_SYMBOL.fullmatch(name):
-            raise BuildError(f"C link symbol name {name!r} is not a safe identifier")
-        if name == "rommod_payload":
-            raise BuildError("C link symbol 'rommod_payload' is reserved by the toolkit")
+        _validate_link_symbol(name, address, kind="link")
         lowered = name.lower()
         if lowered in seen:
             raise BuildError(f"duplicate C link symbol name {name!r}")
         seen.add(lowered)
-        if not isinstance(address, int) or isinstance(address, bool) or not 0 <= address <= 0xFFFFFFFF:
-            raise BuildError(f"C link symbol {name!r} must use a 32-bit non-negative address")
         lines.append(f"{name} = 0x{address:08X};")
+    return "\n".join(lines) + "\n"
+
+
+def _thumb_veneer_source(thumb_link_symbols: dict[str, int] | None) -> str:
+    if not thumb_link_symbols:
+        return ""
+    lines = [".syntax unified", ".arm"]
+    seen: set[str] = set()
+    for name, address in thumb_link_symbols.items():
+        _validate_link_symbol(name, address, kind="Thumb")
+        lowered = name.lower()
+        if lowered in seen:
+            raise BuildError(f"duplicate C Thumb symbol name {name!r}")
+        seen.add(lowered)
+        lines.extend(
+            [
+                f'.section .text.__rommod_thumb_{name},"ax",%progbits',
+                f".global {name}",
+                f".type {name},%function",
+                f"{name}:",
+                "  ldr r12, [pc, #0]",
+                "  bx r12",
+                f"  .word 0x{(address | 1):08X}",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -94,12 +124,21 @@ def compile_arm_c_payload(
     tools: ToolsConfig,
     job_index: int,
     link_symbols: dict[str, int] | None = None,
+    thumb_link_symbols: dict[str, int] | None = None,
 ) -> CCompileResult:
     project = Path(project_dir).resolve()
     if load_address < 0 or load_address > 0xFFFFFFFF or load_address % 4:
         raise BuildError("C payload load address must be a 4-byte-aligned 32-bit address")
     if capacity <= 0:
         raise BuildError("C payload capacity must be positive")
+
+    direct_names = {name.lower() for name in (link_symbols or {})}
+    thumb_names = {name.lower() for name in (thumb_link_symbols or {})}
+    overlap = direct_names & thumb_names
+    if overlap:
+        raise BuildError(
+            f"C symbol cannot be both direct and Thumb-interworked: {sorted(overlap)[0]}"
+        )
 
     source_path = resolve_inside(project, source)
     if not source_path.is_file():
@@ -116,6 +155,8 @@ def compile_arm_c_payload(
     job_dir.mkdir(parents=True, exist_ok=True)
 
     object_path = job_dir / "payload.o"
+    veneer_source_path = job_dir / "thumb_veneers.s"
+    veneer_object_path = job_dir / "thumb_veneers.o"
     elf_path = job_dir / "payload.elf"
     binary_path = job_dir / "payload.bin"
     linker_path = job_dir / "payload.ld"
@@ -148,13 +189,34 @@ def compile_arm_c_payload(
     )
     _require_success(compile_result, "clang C compilation")
 
+    link_objects: list[Path] = [object_path]
+    veneer_source = _thumb_veneer_source(thumb_link_symbols)
+    if veneer_source:
+        veneer_source_path.write_text(veneer_source, encoding="utf-8")
+        veneer_result = run_capture(
+            [
+                clang,
+                "--target=arm-none-eabi",
+                "-mcpu=arm946e-s",
+                "-marm",
+                "-c",
+                veneer_source_path,
+                "-o",
+                veneer_object_path,
+            ],
+            cwd=job_dir,
+        )
+        _require_success(veneer_result, "clang Thumb veneer assembly")
+        link_objects.append(veneer_object_path)
+
     link_result = run_capture(
         [
             ld_lld,
             "--fatal-warnings",
+            "--gc-sections",
             "-T",
             linker_path,
-            object_path,
+            *link_objects,
             "-o",
             elf_path,
         ],
@@ -194,4 +256,5 @@ def compile_arm_c_payload(
         clang_version=probe_version(clang, "--version"),
         lld_version=probe_version(ld_lld, "--version"),
         objcopy_version=probe_version(llvm_objcopy, "--version"),
+        thumb_interworking=bool(thumb_link_symbols),
     )
