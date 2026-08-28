@@ -16,6 +16,7 @@ from rommod.platforms.nds.injection import (
     _ranges_overlap,
     _require_expected,
     _select_hook,
+    _select_hook_mode,
     find_trailing_fill_cave,
 )
 from rommod.platforms.nds.rom import NdsRom
@@ -35,6 +36,9 @@ class CInjectionRunResult:
     code_address: int
     reserve: int
     payload_size: int
+    hook_mode: str
+    hook_size: int
+    scratch_register: str | None
     thumb_interworking: bool
     clang: Path
     clang_version: str
@@ -42,6 +46,72 @@ class CInjectionRunResult:
     lld_version: str
     llvm_objcopy: Path
     objcopy_version: str
+
+
+def _wrapper_prefix_size(hook_mode: str) -> int:
+    return 8 if hook_mode == "arm" else 20
+
+
+def _driver_source(
+    *,
+    architecture: str,
+    imported: str,
+    region_base: int,
+    hook_address: int,
+    cave_address: int,
+    code_address: int,
+    return_address: int,
+    hook_mode: str,
+    scratch_register: str | None,
+    wrapper_label: str,
+) -> str:
+    prefix = architecture + f'.open "target.bin",0x{region_base:08X}\n' + imported
+    if hook_mode == "arm":
+        return (
+            prefix
+            + f".org 0x{hook_address:08X}\n"
+            + f"b {wrapper_label}\n"
+            + f".org 0x{cave_address:08X}\n"
+            + f"{wrapper_label}:\n"
+            + f"bl 0x{code_address:08X}\n"
+            + f"b 0x{return_address:08X}\n"
+            + f".org 0x{code_address:08X}\n"
+            + '.incbin "payload.bin"\n'
+            + ".close\n"
+        )
+
+    if hook_mode == "thumb-short":
+        hook = (
+            ".thumb\n"
+            + f".org 0x{hook_address:08X}\n"
+            + f"b {wrapper_label}\n"
+        )
+    else:
+        assert scratch_register is not None
+        hook = (
+            ".thumb\n"
+            + f".org 0x{hook_address:08X}\n"
+            + f"ldr {scratch_register}, [pc, #0]\n"
+            + f"bx {scratch_register}\n"
+            + f".word 0x{(cave_address | 1):08X}\n"
+        )
+
+    return (
+        prefix
+        + hook
+        + f".org 0x{cave_address:08X}\n"
+        + f"{wrapper_label}:\n"
+        + "bx pc\n"
+        + "nop\n"
+        + ".arm\n"
+        + f"bl 0x{code_address:08X}\n"
+        + "ldr r12, [pc, #0]\n"
+        + "bx r12\n"
+        + f".word 0x{(return_address | 1):08X}\n"
+        + f".org 0x{code_address:08X}\n"
+        + '.incbin "payload.bin"\n'
+        + ".close\n"
+    )
 
 
 def run_c_inject_change(
@@ -54,9 +124,6 @@ def run_c_inject_change(
     project = Path(project_dir).resolve()
     architecture, region, original, setter = _target_state(rom, change.target)
     hook_symbol, hook_offset = _select_hook(project, change, region)
-    if hook_symbol.instruction_set != "arm":
-        raise BuildError("c_inject currently supports ARM hook symbols only")
-    _require_expected(original, hook_offset, change.expected, 4)
 
     if change.cave == "auto":
         cave_offset = find_trailing_fill_cave(
@@ -74,13 +141,25 @@ def run_c_inject_change(
         raise BuildError(
             f"C injection code cave at 0x{cave_offset.value:X} does not match fill byte 0x{change.fill:02X}"
         )
-    if _ranges_overlap(hook_offset.value, 4, cave_offset.value, change.reserve):
-        raise BuildError("C injection hook range overlaps reserved code cave")
-    if change.reserve <= 8:
-        raise BuildError("C injection reserve must leave space after the 8-byte wrapper")
 
     cave_address = file_offset_to_cpu(region, cave_offset).value
-    code_address = cave_address + 8
+    hook_mode, hook_size, scratch_register = _select_hook_mode(
+        change,
+        hook_symbol.instruction_set,
+        hook_symbol.address,
+        cave_address,
+    )
+    _require_expected(original, hook_offset, change.expected, hook_size)
+    if _ranges_overlap(hook_offset.value, hook_size, cave_offset.value, change.reserve):
+        raise BuildError("C injection hook range overlaps reserved code cave")
+
+    prefix_size = _wrapper_prefix_size(hook_mode)
+    if change.reserve <= prefix_size:
+        raise BuildError(
+            f"C injection reserve must leave space after the {prefix_size}-byte "
+            f"{hook_mode} bridge"
+        )
+    code_address = cave_address + prefix_size
 
     imported = _imported_symbol_directives(project, change, region)
     table = load_symbol_table(resolve_inside(project, change.symbol_file))
@@ -101,7 +180,7 @@ def run_c_inject_change(
         project,
         change.source,
         load_address=code_address,
-        capacity=change.reserve - 8,
+        capacity=change.reserve - prefix_size,
         tools=tools,
         job_index=job_index,
         link_symbols=link_symbols,
@@ -109,7 +188,7 @@ def run_c_inject_change(
     )
 
     executable = resolve_armips(project, tools.armips)
-    return_address = hook_symbol.address + 4
+    return_address = hook_symbol.address + hook_size
 
     work_root = resolve_inside(project, "build/work/c_inject")
     job_dir = work_root / f"{job_index:04d}"
@@ -126,18 +205,18 @@ def run_c_inject_change(
 
     wrapper_label = f"__rommod_c_wrapper_{job_index:04d}"
     driver_path.write_text(
-        architecture
-        + f'.open "target.bin",0x{region.ram_address.value:08X}\n'
-        + imported
-        + f".org 0x{hook_symbol.address:08X}\n"
-        + f"b {wrapper_label}\n"
-        + f".org 0x{cave_address:08X}\n"
-        + f"{wrapper_label}:\n"
-        + f"bl 0x{code_address:08X}\n"
-        + f"b 0x{return_address:08X}\n"
-        + f".org 0x{code_address:08X}\n"
-        + '.incbin "payload.bin"\n'
-        + ".close\n",
+        _driver_source(
+            architecture=architecture,
+            imported=imported,
+            region_base=region.ram_address.value,
+            hook_address=hook_symbol.address,
+            cave_address=cave_address,
+            code_address=code_address,
+            return_address=return_address,
+            hook_mode=hook_mode,
+            scratch_register=scratch_register,
+            wrapper_label=wrapper_label,
+        ),
         encoding="utf-8",
     )
 
@@ -160,7 +239,7 @@ def run_c_inject_change(
     for offset, (before, after) in enumerate(zip(original, patched)):
         if before == after:
             continue
-        in_hook = hook_offset.value <= offset < hook_offset.value + 4
+        in_hook = hook_offset.value <= offset < hook_offset.value + hook_size
         in_cave = cave_offset.value <= offset < cave_offset.value + change.reserve
         if not (in_hook or in_cave):
             raise ExternalToolError(
@@ -179,6 +258,9 @@ def run_c_inject_change(
         code_address=code_address,
         reserve=change.reserve,
         payload_size=len(compile_result.binary),
+        hook_mode=hook_mode,
+        hook_size=hook_size,
+        scratch_register=scratch_register,
         thumb_interworking=compile_result.thumb_interworking,
         clang=compile_result.clang,
         clang_version=compile_result.clang_version,
