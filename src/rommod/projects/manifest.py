@@ -68,6 +68,7 @@ class InjectChange:
     fill: int = 0
     symbols: str | None = None
     symbol_component: str | None = None
+    scratch_register: str | None = None
     type: Literal["inject"] = "inject"
 
 
@@ -191,8 +192,11 @@ def _parse_change(value: object, index: int) -> Change:
         )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
-        if len(expected) != 4:
-            raise ManifestError(f"{field}.expected must contain exactly 4 bytes for an ARM hook")
+        if len(expected) not in (2, 4, 8):
+            raise ManifestError(
+                f"{field}.expected must contain 2 bytes (Thumb short), "
+                "4 bytes (ARM), or 8 bytes (Thumb long)"
+            )
         reserve = _parse_positive_int(mapping.get("reserve"), f"{field}.reserve")
         if reserve % 4:
             raise ManifestError(f"{field}.reserve must be a multiple of 4")
@@ -207,6 +211,7 @@ def _parse_change(value: object, index: int) -> Change:
             fill=_parse_fill_byte(mapping.get("fill", "00"), f"{field}.fill"),
             symbols=_optional_str(mapping, "symbols", field),
             symbol_component=_optional_str(mapping, "symbol_component", field),
+            scratch_register=_optional_str(mapping, "scratch_register", field),
         )
     raise ManifestError(f"{field}.type is unsupported: {kind!r}")
 
@@ -275,6 +280,8 @@ def _change_to_mapping(change: Change) -> dict:
             result["symbols"] = change.symbols
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
+        if change.scratch_register is not None:
+            result["scratch_register"] = change.scratch_register
         return result
     raise ManifestError(f"Unsupported change object: {type(change).__name__}")
 
