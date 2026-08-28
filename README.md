@@ -2,7 +2,7 @@
 
 `Rom-Mod-Toolkit` is an NDS-first toolkit for reproducible ROM inspection, extraction, modification, rebuild, and verification.
 
-The toolkit prioritizes a trustworthy rebuild path. A project always rebuilds from a SHA-256-locked source ROM plus declared mutations; the source ROM is never modified in place.
+The current NDS path combines a trustworthy Phase 1 rebuild foundation with Phase 2 armips-backed ARM/Thumb patching. A project always rebuilds from a SHA-256-locked source ROM plus declared mutations; the source ROM is never modified in place.
 
 ## Current NDS capabilities
 
@@ -11,20 +11,22 @@ The toolkit prioritizes a trustworthy rebuild path. A project always rebuilds fr
 - Extract ARM9, ARM7, NitroFS files, and ARM9/ARM7 overlays for inspection.
 - Replace existing NitroFS files.
 - Apply exact, guarded byte patches to ARM9, ARM7, overlays, or NitroFS files.
-- Apply real ARM/Thumb assembly fragments through `armips` to ARM9, ARM7, ARM9 overlays, and ARM7 overlays.
-- Optionally generate armips symbol files after a successful validated rebuild.
 - Rebuild through `ndspy` and reparse the output before it is accepted.
 - Verify key header ranges, FAT entries, overlay-table references, and fresh parsing.
-- Produce deterministic build output for the same source, manifest, and dependency/tool versions.
-- Write a machine-readable `reports/build.json` with source/output hashes, applied mutations, and external tool versions.
+- Produce deterministic build output for the same source, manifest, and dependency versions.
+- Write a machine-readable `reports/build.json` with source/output hashes and applied mutations.
 - Keep CPU addresses and target-relative file offsets as separate typed concepts in the library.
+- Run real `armips` fragments against isolated ARM9, ARM7, ARM9-overlay, or ARM7-overlay working copies.
+- Permit ARM/Thumb mode switching and CPU-address `.org` patches without exposing the source ROM to armips.
+- Emit optional armips symbol files only after rebuilt-ROM validation succeeds.
+- Record the resolved armips executable and version in build reports when assembly patches are used.
 
 ## Requirements
 
 - Python 3.10+
 - `ndspy==4.2.0`
 - `PyYAML>=6.0`
-- armips 0.11-compatible executable when assembly patches are used
+- `armips` 0.11-compatible executable when a project contains `type: armips` changes
 
 For development/testing:
 
@@ -88,6 +90,8 @@ changes: []
 
 ### Replace an existing NitroFS file
 
+Put the replacement inside the project and declare it:
+
 ```yaml
 changes:
   - type: file_replace
@@ -95,7 +99,7 @@ changes:
     source: files/example.bin
 ```
 
-The current filesystem mutation path replaces existing NitroFS paths. Creating or deleting entries is deferred.
+Phase 1 only replaces existing NitroFS paths. Creating or deleting filesystem entries is intentionally deferred.
 
 ### Guarded byte patch
 
@@ -122,19 +126,13 @@ file:<nitrofs/path>
 
 `offset` is always a target-relative serialized-file offset. It is **not** a CPU address.
 
-## armips assembly patches
+### ARM/Thumb assembly patch
 
-Assembly patches are declared as normal manifest changes. `armips` is resolved in this order:
-
-1. `tools.armips` in `rommod.yaml`;
-2. `ROMMOD_ARMIPS` environment variable;
-3. system `PATH`.
-
-Example configuration:
+Assembly fragments run against an isolated copy of one code target under `build/work/armips/`; armips never receives the source ROM. Configure the executable explicitly, through `ROMMOD_ARMIPS`, or on `PATH`:
 
 ```yaml
 tools:
-  armips: tools/armips
+  armips: /path/to/armips
 
 changes:
   - type: armips
@@ -143,32 +141,73 @@ changes:
     symbols: reports/battle_patch.sym
 ```
 
-The user script is an **assembly fragment**, not a complete armips project. The toolkit owns the target file, architecture declaration, open/close directives, build workspace, and final reinsertion into the ROM.
-
-Example ARM9 fragment:
+Example fragment:
 
 ```asm
-.org 0x02012340
+.org 0x02001234
+.thumb
+nop
 .arm
-mov r0, #1
-bx lr
 PatchEnd:
 ```
 
-A fragment may switch between `.arm` and `.thumb`. `.org` uses CPU addresses. ARM9 and ARM9 overlays are wrapped using the NDS ARM architecture; ARM7 and ARM7 overlays are wrapped using ARM7-compatible settings. CPU-address mapping is rejected for compressed targets rather than guessed.
+Supported assembly targets are `arm9`, `arm7`, `overlay9:<id>`, and `overlay7:<id>`. The wrapper selects the appropriate ARM architecture and maps `.org` CPU addresses to the target's RAM base. A fragment may switch between `.arm` and `.thumb`.
 
-Supported armips targets:
+For safety, the first armips slice rejects fragment directives that take ownership of files or architecture selection, including `.open`, `.create`, `.close`, `.include`, `.headersize`, `.nds`, and `.gba`. Patched targets must remain exactly the same serialized size. A missing or failed assembler aborts the build without writing the configured ROM output.
 
-```text
-arm9
-arm7
-overlay9:<overlay-id>
-overlay7:<overlay-id>
+Tool resolution order is:
+
+1. `tools.armips` in `rommod.yaml`;
+2. `ROMMOD_ARMIPS`;
+3. `armips` on `PATH`.
+
+### Import analysis symbols into armips
+
+An armips change can import the component-aware JSON emitted by the NDS analysis/disassembly workflow and use those names directly in assembly. Runtime address alone is not treated as unique because overlays can overlap in RAM; component identity remains part of symbol resolution.
+
+```yaml
+changes:
+  - type: armips
+    target: overlay9:0
+    script: asm/battle_patch.asm
+    symbol_file: analysis/symbols.json
+    symbol_component: battle_overlay
 ```
 
-For safety, fragments cannot take ownership of files or architecture selection. Directives such as `.open`, `.create`, `.close`, `.include`, `.headersize`, `.nds`, and `.gba` are rejected. The patched target must remain exactly the same serialized size in this slice.
+Accepted symbol files are either a JSON array or an object with a `symbols` array. Each record carries at least `component`, runtime `address`, component-relative `offset`, and `name`; `instruction_set` may be `arm`, `thumb`, or null. ARM symbols become `.definearmlabel`, Thumb symbols become `.definethumblabel`, and neutral/data labels become `.definelabel`.
 
-If `symbols` is requested, the `.sym` output is copied to the project only **after** the rebuilt ROM passes structural and touched-target verification. Failed assembler jobs do not produce the configured ROM output.
+Before armips runs, every imported symbol is checked against the selected target's uncompressed RAM mapping. Address/offset mismatches, out-of-range symbols, unsafe identifiers, duplicate names, or missing requested components fail closed.
+
+Example fragment using an imported symbol:
+
+```asm
+.org PatchSite
+.word 0xAABBCCDD
+```
+
+### Automatic ARM hook injection
+
+`type: inject` builds a guarded ARM hook from a named imported symbol, places the payload in reserved free space, and automatically branches back to the instruction after the overwritten hook. The first injector intentionally supports **ARM hooks only**; Thumb hooks are rejected until the veneer/trampoline layer is enabled.
+
+```yaml
+changes:
+  - type: inject
+    target: arm9
+    symbol_file: analysis/symbols.json
+    hook: BattleDamage
+    expected: "05 06 07 08"
+    script: asm/battle_damage_payload.asm
+    cave: auto
+    reserve: 32
+    fill: "00"
+    symbols: reports/battle_damage.sym
+```
+
+The payload is a positionless ARM fragment; the toolkit owns `.org`, architecture/mode selection, the generated hook branch, the cave label, and the return branch. File-owning/import directives remain forbidden.
+
+`cave: auto` searches only the **trailing** run of the requested fill byte in the selected target, aligned to four bytes. It never treats an arbitrary internal zero run as executable free space. An explicit cave may instead be supplied as a CPU address. The reserved cave must already contain exactly the declared fill byte.
+
+After armips runs, the toolkit diffs the complete target and rejects any changed byte outside the 4-byte hook or declared cave reserve. The hook and cave cannot overlap, target size cannot change, and the configured ROM output is not written when any guard fails. Resolved hook/cave addresses are recorded in `reports/build.json`.
 
 ## Extraction output
 
@@ -193,24 +232,22 @@ Extraction is for inspection and authoring. Builds do **not** blindly rebuild fr
 
 ## Build safety
 
-A build performs this sequence:
+An NDS build performs this sequence:
 
 1. Parse the project manifest.
 2. Resolve the source ROM and verify its SHA-256.
 3. Load and structurally validate the NDS image.
 4. Clean the temporary build workspace.
 5. Apply changes in manifest order.
-6. Run armips jobs only against copied targets under `build/work/armips/` when requested.
-7. Snapshot every touched target for post-rebuild verification.
-8. Serialize the ROM through the NDS backend.
-9. Validate the serialized image.
-10. Reload it through a fresh NDS parser.
-11. Confirm every touched target survived rebuild exactly.
-12. Materialize validated symbol outputs when requested.
-13. Atomically write the output ROM.
-14. Record hashes, mutations, validation state, and tool versions in `reports/build.json`.
+6. Snapshot every touched target for post-rebuild verification.
+7. Serialize the ROM through the NDS backend.
+8. Validate the serialized image.
+9. Reload it through a fresh NDS parser.
+10. Confirm every touched target survived rebuild exactly.
+11. Atomically write the output ROM.
+12. Record hashes, mutations, validation state, and the `ndspy` version in `reports/build.json`.
 
-A failed mutation, assembler, or validation stage does not write a partial configured output.
+A failed mutation or validation stage does not write a partial configured output.
 
 ## Verification scope
 
@@ -238,22 +275,21 @@ The test suite uses a programmatically generated synthetic Nintendo DS fixture; 
 pytest -q
 ```
 
-Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, complete CLI workflow, safe armips-fragment validation, tool discovery, and real ARM9/ARM7/overlay armips patching when armips is available.
+Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, and guarded automatic ARM hook injection when armips is available.
 
 ## Deferred NDS work
 
-Current NDS work still does **not** include:
+The current NDS path does **not** yet include:
 
-- automatic ARM/Thumb hooks and trampolines;
-- code-cave discovery;
-- symbol-aware hook/injection planning;
-- compiled C/C++ injection;
+- Thumb hooks and long-range veneers/trampolines;
+- broader code-cave/free-space discovery beyond guarded trailing fill runs;
+- compiled C/C++ injection and linking;
 - Keystone or Unicorn integration;
 - BPS/IPS/xdelta patch-file generation;
 - NitroFS create/delete operations;
 - emulator-driven behavioral validation.
 
-The immediate next NDS layer is symbol-aware hook and code-injection support on top of the proven armips pipeline.
+The immediate next phase extends the proven ARM injector with Thumb-safe veneers/trampolines while preserving the same hook-byte, cave, and diff guards.
 
 ## PSP status
 
