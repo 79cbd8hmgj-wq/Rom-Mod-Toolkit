@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from rommod.platforms.nds.binaries import get_main_binary, set_main_binary
 from rommod.platforms.nds.rom import NdsRom
@@ -11,12 +15,20 @@ from rommod.projects.manifest import CInjectChange, ToolsConfig, write_manifest
 from rommod.projects.project import init_project
 
 
-TOOLS = ToolsConfig(
-    armips="/mnt/data/armips-build/armips",
-    clang="/usr/local/swift/usr/bin/clang",
-    ld_lld="/usr/local/swift/usr/bin/ld.lld",
-    llvm_objcopy="/usr/local/swift/usr/bin/llvm-objcopy",
-)
+def _tool(name: str, env: str) -> str:
+    value = os.environ.get(env) or shutil.which(name)
+    if not value:
+        pytest.skip(f"{name} executable not available")
+    return str(Path(value).absolute())
+
+
+def _tools() -> ToolsConfig:
+    return ToolsConfig(
+        armips=_tool("armips", "ROMMOD_ARMIPS"),
+        clang=_tool("clang", "ROMMOD_CLANG"),
+        ld_lld=_tool("ld.lld", "ROMMOD_LD_LLD"),
+        llvm_objcopy=_tool("llvm-objcopy", "ROMMOD_LLVM_OBJCOPY"),
+    )
 
 
 def test_build_injects_freestanding_arm_c_payload(synthetic_rom_path: Path, tmp_path: Path):
@@ -57,7 +69,7 @@ def test_build_injects_freestanding_arm_c_payload(synthetic_rom_path: Path, tmp_
             cave="auto",
             reserve=32,
         ),),
-        tools=TOOLS,
+        tools=_tools(),
     )
     write_manifest(project, manifest)
 
@@ -130,7 +142,7 @@ def test_build_c_payload_links_validated_arm_game_symbol(synthetic_rom_path: Pat
             cave="auto",
             reserve=32,
         ),),
-        tools=TOOLS,
+        tools=_tools(),
     )
     write_manifest(project, manifest)
 
