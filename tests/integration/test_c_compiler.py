@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -9,11 +11,18 @@ from rommod.platforms.nds.c_compiler import compile_arm_c_payload
 from rommod.projects.manifest import ToolsConfig
 
 
+def _tool(name: str, env: str) -> str:
+    value = os.environ.get(env) or shutil.which(name)
+    if not value:
+        pytest.skip(f"{name} executable not available")
+    return str(Path(value).absolute())
+
+
 def _tools() -> ToolsConfig:
     return ToolsConfig(
-        clang="/usr/local/swift/usr/bin/clang",
-        ld_lld="/usr/local/swift/usr/bin/ld.lld",
-        llvm_objcopy="/usr/local/swift/usr/bin/llvm-objcopy",
+        clang=_tool("clang", "ROMMOD_CLANG"),
+        ld_lld=_tool("ld.lld", "ROMMOD_LD_LLD"),
+        llvm_objcopy=_tool("llvm-objcopy", "ROMMOD_LLVM_OBJCOPY"),
     )
 
 
