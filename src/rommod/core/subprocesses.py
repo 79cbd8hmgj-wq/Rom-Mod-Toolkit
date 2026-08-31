@@ -104,6 +104,26 @@ def resolve_llvm_objcopy(project_dir: Path, configured: str | None) -> Path:
     )
 
 
+def resolve_flips(project_dir: Path, configured: str | None) -> Path:
+    return resolve_executable(
+        project_dir,
+        configured,
+        env_name="ROMMOD_FLIPS",
+        program="flips",
+        label="Floating IPS (flips)",
+    )
+
+
+def resolve_xdelta3(project_dir: Path, configured: str | None) -> Path:
+    return resolve_executable(
+        project_dir,
+        configured,
+        env_name="ROMMOD_XDELTA3",
+        program="xdelta3",
+        label="xdelta3",
+    )
+
+
 def run_capture(argv: Sequence[str | Path], cwd: Path | None = None) -> ProcessResult:
     args = tuple(str(value) for value in argv)
     try:
