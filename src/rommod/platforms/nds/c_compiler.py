@@ -1,4 +1,4 @@
-"""Freestanding ARM C payload compilation for NDS injection."""
+"""Freestanding ARM C/C++ payload compilation for NDS injection."""
 
 from __future__ import annotations
 
@@ -22,6 +22,13 @@ from rommod.projects.manifest import ToolsConfig
 
 _LINK_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _C_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CPP_SUFFIXES = {".cc", ".cpp", ".cxx", ".c++"}
+_CPP_FLAGS = (
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-fno-threadsafe-statics",
+    "-fno-use-cxa-atexit",
+)
 
 
 @dataclass(frozen=True)
@@ -160,6 +167,19 @@ def _normalize_defines(defines: Sequence[str] | None) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def _language_args(language: str, source_path: Path) -> tuple[str, ...]:
+    if language not in {"auto", "c", "cpp"}:
+        raise BuildError("C payload language must be one of auto, c, cpp")
+    if language == "c":
+        return ("-x", "c")
+    if language == "cpp":
+        return ("-x", "c++", *_CPP_FLAGS)
+    suffix = source_path.suffix
+    if suffix == ".C" or suffix.lower() in _CPP_SUFFIXES:
+        return _CPP_FLAGS
+    return ()
+
+
 def compile_arm_c_payload(
     project_dir: Path,
     source: str | None,
@@ -171,6 +191,7 @@ def compile_arm_c_payload(
     sources: Sequence[str] | None = None,
     include_dirs: Sequence[str] | None = None,
     defines: Sequence[str] | None = None,
+    language: str = "auto",
     link_symbols: dict[str, int] | None = None,
     thumb_link_symbols: dict[str, int] | None = None,
 ) -> CCompileResult:
@@ -179,6 +200,8 @@ def compile_arm_c_payload(
         raise BuildError("C payload load address must be a 4-byte-aligned 32-bit address")
     if capacity <= 0:
         raise BuildError("C payload capacity must be positive")
+    if language not in {"auto", "c", "cpp"}:
+        raise BuildError("C payload language must be one of auto, c, cpp")
 
     direct_names = {name.lower() for name in (link_symbols or {})}
     thumb_names = {name.lower() for name in (thumb_link_symbols or {})}
@@ -220,6 +243,7 @@ def compile_arm_c_payload(
     link_objects: list[Path] = []
     for index, source_path in enumerate(source_paths):
         object_path = job_dir / f"payload_{index:03d}.o"
+        language_args = _language_args(language, source_path)
         compile_result = run_capture([
             clang,
             "--target=arm-none-eabi",
@@ -237,6 +261,7 @@ def compile_arm_c_payload(
             "-fdata-sections",
             "-fno-common",
             "-nostdlib",
+            *language_args,
             *include_args,
             *define_args,
             "-c",
@@ -244,7 +269,7 @@ def compile_arm_c_payload(
             "-o",
             object_path,
         ], cwd=job_dir)
-        _require_success(compile_result, f"clang C compilation ({source_names[index]})")
+        _require_success(compile_result, f"clang payload compilation ({source_names[index]})")
         link_objects.append(object_path)
 
     veneer_source = _thumb_veneer_source(thumb_link_symbols)
