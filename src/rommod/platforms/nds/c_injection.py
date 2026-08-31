@@ -1,4 +1,4 @@
-"""Guarded freestanding ARM C payload injection for NDS code targets."""
+"""Guarded freestanding ARM C/C++ payload injection for NDS code targets."""
 
 from __future__ import annotations
 
@@ -177,6 +177,7 @@ def run_c_inject_change(
         sources=change.sources,
         include_dirs=change.include_dirs,
         defines=change.defines,
+        language=change.language,
         load_address=code_address,
         capacity=change.reserve - prefix_size,
         tools=tools,
