@@ -176,6 +176,7 @@ def run_c_inject_change(
         change.source,
         sources=change.sources,
         include_dirs=change.include_dirs,
+        defines=change.defines,
         load_address=code_address,
         capacity=change.reserve - prefix_size,
         tools=tools,
