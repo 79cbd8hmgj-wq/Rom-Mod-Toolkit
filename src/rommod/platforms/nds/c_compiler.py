@@ -21,6 +21,7 @@ from rommod.projects.manifest import ToolsConfig
 
 
 _LINK_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_C_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,22 @@ def _resolve_include_dirs(project: Path, include_dirs: Sequence[str] | None) -> 
     return tuple(resolved)
 
 
+def _normalize_defines(defines: Sequence[str] | None) -> tuple[str, ...]:
+    if not defines:
+        return ()
+    normalized: list[str] = []
+    for index, value in enumerate(defines):
+        if not isinstance(value, str) or not value:
+            raise BuildError(f"C define[{index}] must be a non-empty string")
+        if any(ch in value for ch in "\r\n\0"):
+            raise BuildError(f"C define[{index}] must not contain control characters")
+        name = value.split("=", 1)[0]
+        if not _C_DEFINE_NAME.fullmatch(name):
+            raise BuildError(f"C define[{index}] has invalid macro name {name!r}")
+        normalized.append(value)
+    return tuple(normalized)
+
+
 def compile_arm_c_payload(
     project_dir: Path,
     source: str | None,
@@ -153,6 +170,7 @@ def compile_arm_c_payload(
     job_index: int,
     sources: Sequence[str] | None = None,
     include_dirs: Sequence[str] | None = None,
+    defines: Sequence[str] | None = None,
     link_symbols: dict[str, int] | None = None,
     thumb_link_symbols: dict[str, int] | None = None,
 ) -> CCompileResult:
@@ -180,6 +198,7 @@ def compile_arm_c_payload(
     include_args: list[str | Path] = []
     for include_path in include_paths:
         include_args.extend(["-I", include_path])
+    define_args = [f"-D{value}" for value in _normalize_defines(defines)]
 
     clang = resolve_clang(project, tools.clang)
     ld_lld = resolve_ld_lld(project, tools.ld_lld)
@@ -219,6 +238,7 @@ def compile_arm_c_payload(
             "-fno-common",
             "-nostdlib",
             *include_args,
+            *define_args,
             "-c",
             source_path,
             "-o",
