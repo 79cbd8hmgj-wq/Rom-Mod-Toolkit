@@ -33,6 +33,8 @@ class ToolsConfig:
     clang: str | None = None
     ld_lld: str | None = None
     llvm_objcopy: str | None = None
+    flips: str | None = None
+    xdelta3: str | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +337,8 @@ def _from_mapping(data: object) -> ProjectManifest:
         clang=_optional_str(tools_map, "clang", "tools"),
         ld_lld=_optional_str(tools_map, "ld_lld", "tools"),
         llvm_objcopy=_optional_str(tools_map, "llvm_objcopy", "tools"),
+        flips=_optional_str(tools_map, "flips", "tools"),
+        xdelta3=_optional_str(tools_map, "xdelta3", "tools"),
     )
 
     raw_changes = root.get("changes", [])
@@ -434,6 +438,8 @@ def write_manifest(project_dir: Path, manifest: ProjectManifest) -> None:
         "clang": manifest.tools.clang,
         "ld_lld": manifest.tools.ld_lld,
         "llvm_objcopy": manifest.tools.llvm_objcopy,
+        "flips": manifest.tools.flips,
+        "xdelta3": manifest.tools.xdelta3,
     }
     configured_tools = {key: value for key, value in tool_values.items() if value is not None}
     if configured_tools:
