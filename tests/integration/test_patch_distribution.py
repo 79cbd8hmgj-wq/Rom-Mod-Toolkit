@@ -73,7 +73,8 @@ def test_project_patch_rebuilds_and_writes_report(synthetic_rom_path: Path, tmp_
     write_manifest(project, manifest)
 
     result = create_project_patch(project, "bps")
-    assert result.output_path == project / "build/output/game-modded.bps"
+    expected_patch = (project / manifest.output.rom).with_suffix(".bps")
+    assert result.output_path == expected_patch
     assert result.output_path.is_file()
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
     assert report["format"] == "bps"
