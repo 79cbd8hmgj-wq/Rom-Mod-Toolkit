@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -12,6 +13,7 @@ from rommod.errors import ManifestError
 
 
 _HEX = set("0123456789abcdef")
+_C_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class CInjectChange:
     scratch_register: str | None = None
     sources: tuple[str, ...] = ()
     include_dirs: tuple[str, ...] = ()
+    defines: tuple[str, ...] = ()
     type: Literal["c_inject"] = "c_inject"
 
 
@@ -139,6 +142,19 @@ def _parse_string_list(mapping: dict, key: str, field: str) -> tuple[str, ...]:
             raise ManifestError(f"{field}.{key}[{index}] must be a non-empty string")
         parsed.append(item)
     return tuple(parsed)
+
+
+def _parse_c_defines(mapping: dict, field: str) -> tuple[str, ...]:
+    defines = _parse_string_list(mapping, "defines", field)
+    for index, define in enumerate(defines):
+        if any(ch in define for ch in "\r\n\0"):
+            raise ManifestError(f"{field}.defines[{index}] must not contain control characters")
+        name = define.split("=", 1)[0]
+        if not _C_DEFINE_NAME.fullmatch(name):
+            raise ManifestError(
+                f"{field}.defines[{index}] must start with a valid C macro name"
+            )
+    return defines
 
 
 def _parse_sha256(value: str) -> str:
@@ -267,6 +283,7 @@ def _parse_change(value: object, index: int) -> Change:
             scratch_register=_optional_str(mapping, "scratch_register", field),
             sources=sources,
             include_dirs=_parse_string_list(mapping, "include_dirs", field),
+            defines=_parse_c_defines(mapping, field),
         )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
@@ -364,6 +381,8 @@ def _change_to_mapping(change: Change) -> dict:
             result["sources"] = list(change.sources)
         if change.include_dirs:
             result["include_dirs"] = list(change.include_dirs)
+        if change.defines:
+            result["defines"] = list(change.defines)
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
