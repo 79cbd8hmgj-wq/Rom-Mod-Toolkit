@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from rommod.errors import RomModError
+from rommod.patching.distribution import create_project_patch
 from rommod.platforms.nds.extract import extract_project
 from rommod.platforms.nds.rom import NdsRom
 from rommod.platforms.nds.validation import verify_project, verify_rom
@@ -36,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify_cmd = subparsers.add_parser("verify", help="verify an NDS ROM or project output")
     verify_cmd.add_argument("target", type=Path)
+
+    patch_cmd = subparsers.add_parser("patch", help="build and create a verified distributable patch")
+    patch_cmd.add_argument("project", type=Path)
+    patch_cmd.add_argument("--format", choices=("bps", "ips", "xdelta"), required=True)
+    patch_cmd.add_argument("--output", type=Path)
     return parser
 
 
@@ -78,6 +84,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify":
             report = verify_project(args.target) if args.target.is_dir() else verify_rom(args.target)
             print(json.dumps(asdict(report), indent=2, sort_keys=True))
+            return 0
+        if args.command == "patch":
+            result = create_project_patch(args.project, args.format, args.output)
+            print(
+                json.dumps(
+                    {
+                        "format": result.patch_format,
+                        "output": str(result.output_path),
+                        "patch_sha256": result.patch_sha256,
+                        "report": str(result.report_path),
+                        "source_sha256": result.source_sha256,
+                        "target_sha256": result.target_sha256,
+                        "verified": result.verified,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         parser.print_help()
         return 0
