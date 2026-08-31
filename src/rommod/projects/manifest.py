@@ -14,6 +14,7 @@ from rommod.errors import ManifestError
 
 _HEX = set("0123456789abcdef")
 _C_DEFINE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_C_LANGUAGES = {"auto", "c", "cpp"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class CInjectChange:
     sources: tuple[str, ...] = ()
     include_dirs: tuple[str, ...] = ()
     defines: tuple[str, ...] = ()
+    language: Literal["auto", "c", "cpp"] = "auto"
     type: Literal["c_inject"] = "c_inject"
 
 
@@ -157,6 +159,13 @@ def _parse_c_defines(mapping: dict, field: str) -> tuple[str, ...]:
                 f"{field}.defines[{index}] must start with a valid C macro name"
             )
     return defines
+
+
+def _parse_c_language(mapping: dict, field: str) -> Literal["auto", "c", "cpp"]:
+    value = mapping.get("language", "auto")
+    if not isinstance(value, str) or value not in _C_LANGUAGES:
+        raise ManifestError(f"{field}.language must be one of auto, c, cpp")
+    return value  # type: ignore[return-value]
 
 
 def _parse_sha256(value: str) -> str:
@@ -286,6 +295,7 @@ def _parse_change(value: object, index: int) -> Change:
             sources=sources,
             include_dirs=_parse_string_list(mapping, "include_dirs", field),
             defines=_parse_c_defines(mapping, field),
+            language=_parse_c_language(mapping, field),
         )
     if kind == "inject":
         expected = _parse_hex_bytes(mapping.get("expected"), f"{field}.expected")
@@ -387,6 +397,8 @@ def _change_to_mapping(change: Change) -> dict:
             result["include_dirs"] = list(change.include_dirs)
         if change.defines:
             result["defines"] = list(change.defines)
+        if change.language != "auto":
+            result["language"] = change.language
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
