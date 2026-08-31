@@ -1,8 +1,8 @@
 # Rom Mod Toolkit
 
-`Rom-Mod-Toolkit` is an NDS-first toolkit for reproducible ROM inspection, extraction, modification, rebuild, and verification.
+`Rom-Mod-Toolkit` is an NDS-first toolkit for reproducible ROM inspection, extraction, modification, rebuild, verification, code injection, and distributable patch generation.
 
-The current NDS path combines a trustworthy Phase 1 rebuild foundation with Phase 2 armips-backed ARM/Thumb patching. A project always rebuilds from a SHA-256-locked source ROM plus declared mutations; the source ROM is never modified in place.
+The NDS path always works from a SHA-256-locked source ROM plus declared mutations. The source ROM is never modified in place, and failed mutation, tool, rebuild, or verification stages do not leave a partially accepted configured output.
 
 ## Current NDS capabilities
 
@@ -10,29 +10,33 @@ The current NDS path combines a trustworthy Phase 1 rebuild foundation with Phas
 - Inspect normalized NDS header, ARM9, ARM7, filesystem, and overlay metadata.
 - Extract ARM9, ARM7, NitroFS files, and ARM9/ARM7 overlays for inspection.
 - Replace existing NitroFS files.
-- Apply exact, guarded byte patches to ARM9, ARM7, overlays, or NitroFS files.
+- Apply exact guarded byte patches to ARM9, ARM7, overlays, or NitroFS files.
 - Rebuild through `ndspy` and reparse the output before it is accepted.
 - Verify key header ranges, FAT entries, overlay-table references, and fresh parsing.
 - Produce deterministic build output for the same source, manifest, and dependency versions.
 - Write a machine-readable `reports/build.json` with source/output hashes and applied mutations.
-- Keep CPU addresses and target-relative file offsets as separate typed concepts in the library.
+- Keep CPU addresses and target-relative file offsets as separate typed concepts.
 - Run real `armips` fragments against isolated ARM9, ARM7, ARM9-overlay, or ARM7-overlay working copies.
-- Permit ARM/Thumb mode switching and CPU-address `.org` patches without exposing the source ROM to armips.
-- Emit optional armips symbol files only after rebuilt-ROM validation succeeds.
-- Record the resolved armips executable and version in build reports when assembly patches are used.
+- Import component-aware analysis symbols into armips while preserving ARM/Thumb identity.
 - Build guarded symbol-aware ARM hooks plus short and long Thumb hooks into verified code caves.
-- Require an explicit low scratch register for long-range Thumb veneers so register clobbering is never implicit.
-- Compile freestanding ARM C payloads with Clang/LLD and inject them through the same guarded hook/cave pipeline.
-- Link C `extern` references to validated ARM/data symbols and Thumb functions from the component-aware NDS analysis JSON.
-- Generate ARM-to-Thumb call veneers automatically for C calls into analyzed Thumb functions, using `r12/ip` as ABI call-scratch and garbage-collecting unused veneers at link time.
+- Compile freestanding C payloads with Clang/LLD and inject them from ARM or Thumb hook sites.
+- Build one C payload from either one source file or multiple translation units.
+- Apply shared project-relative include directories and validated preprocessor definitions to every C translation unit.
+- Link C `extern` references to validated ARM/data symbols and Thumb functions from analysis JSON.
+- Generate ARM-to-Thumb call veneers automatically for referenced Thumb functions.
+- Discover aligned fill-run free-space candidates in ARM9, ARM7, and overlays without mutating the ROM.
+- Create and round-trip verify BPS and IPS patches with Flips.
+- Create and round-trip verify xdelta/VCDIFF patches with xdelta3.
 
 ## Requirements
 
 - Python 3.10+
 - `ndspy==4.2.0`
 - `PyYAML>=6.0`
-- `armips` 0.11-compatible executable when a project contains assembly or injection changes
+- `armips` when a project contains assembly or injection changes
 - Clang with `arm-none-eabi` support, LLD, and `llvm-objcopy` when a project contains `type: c_inject` changes
+- Flips for BPS/IPS patch generation
+- xdelta3 for xdelta patch generation
 
 For development/testing:
 
@@ -41,15 +45,21 @@ python -m pip install -e ".[test]"
 pytest -q
 ```
 
+The repository CI builds/resolves the real external tools used by the NDS path before running the full test suite.
+
 ## Command workflow
 
 ```bash
 rommod init game.nds my-mod
 rommod inspect my-mod
 rommod extract my-mod
+rommod caves my-mod --target arm9 --min-size 32 --fill 00 --alignment 4
 rommod build my-mod
 rommod verify my-mod
+rommod patch my-mod --format bps
 ```
+
+Patch formats are `bps`, `ips`, and `xdelta`.
 
 You can also inspect or verify a standalone ROM:
 
@@ -62,7 +72,7 @@ Toolkit validation errors are printed as concise `error: ...` diagnostics and re
 
 ## Project layout
 
-`rommod init` creates:
+`rommod init` creates a project shell like:
 
 ```text
 my-mod/
@@ -77,7 +87,7 @@ my-mod/
 └── reports/
 ```
 
-The configured source may live outside the project. Its SHA-256 is recorded in `rommod.yaml`; builds and project verification fail if that source changes.
+The configured source may live outside the project. Its SHA-256 is recorded in `rommod.yaml`; build, project verification, cave discovery, and patch distribution all enforce the locked source.
 
 ## Manifest
 
@@ -96,8 +106,6 @@ changes: []
 
 ### Replace an existing NitroFS file
 
-Put the replacement inside the project and declare it:
-
 ```yaml
 changes:
   - type: file_replace
@@ -105,11 +113,11 @@ changes:
     source: files/example.bin
 ```
 
-Phase 1 only replaces existing NitroFS paths. Creating or deleting filesystem entries is intentionally deferred.
+Creating or deleting NitroFS entries is intentionally not part of the current slice.
 
 ### Guarded byte patch
 
-Every byte patch includes the bytes expected at the target location. If they do not match, the build aborts without writing the configured output.
+Every byte patch includes the bytes expected at the target location. A mismatch aborts the build.
 
 ```yaml
 changes:
@@ -120,7 +128,7 @@ changes:
     replacement: "AA BB CC DD"
 ```
 
-Supported byte-patch targets:
+Supported byte-patch targets are:
 
 ```text
 arm9
@@ -130,11 +138,11 @@ overlay7:<overlay-id>
 file:<nitrofs/path>
 ```
 
-`offset` is always a target-relative serialized-file offset. It is **not** a CPU address.
+`offset` is always a target-relative serialized-file offset, not a CPU address.
 
-### ARM/Thumb assembly patch
+## ARM/Thumb assembly patching
 
-Assembly fragments run against an isolated copy of one code target under `build/work/armips/`; armips never receives the source ROM. Configure the executable explicitly, through `ROMMOD_ARMIPS`, or on `PATH`:
+Assembly fragments run against isolated target copies under `build/work/`; armips never receives the source ROM directly.
 
 ```yaml
 tools:
@@ -157,19 +165,13 @@ nop
 PatchEnd:
 ```
 
-Supported assembly targets are `arm9`, `arm7`, `overlay9:<id>`, and `overlay7:<id>`. The wrapper selects the appropriate ARM architecture and maps `.org` CPU addresses to the target's RAM base. A fragment may switch between `.arm` and `.thumb`.
+Supported code targets are `arm9`, `arm7`, `overlay9:<id>`, and `overlay7:<id>`. The toolkit wrapper selects the architecture and maps `.org` CPU addresses to the target RAM base. A fragment may switch between ARM and Thumb.
 
-For safety, the first armips slice rejects fragment directives that take ownership of files or architecture selection, including `.open`, `.create`, `.close`, `.include`, `.headersize`, `.nds`, and `.gba`. Patched targets must remain exactly the same serialized size. A missing or failed assembler aborts the build without writing the configured ROM output.
-
-Tool resolution order is:
-
-1. `tools.armips` in `rommod.yaml`;
-2. `ROMMOD_ARMIPS`;
-3. `armips` on `PATH`.
+For safety, user fragments cannot take ownership of files or architecture selection with directives such as `.open`, `.create`, `.close`, `.include`, `.headersize`, `.nds`, or `.gba`. Patched targets must remain exactly the same serialized size.
 
 ### Import analysis symbols into armips
 
-An armips change can import the component-aware JSON emitted by the NDS analysis/disassembly workflow and use those names directly in assembly. Runtime address alone is not treated as unique because overlays can overlap in RAM; component identity remains part of symbol resolution.
+An armips change can import the component-aware JSON emitted by an NDS analysis/disassembly workflow:
 
 ```yaml
 changes:
@@ -180,20 +182,13 @@ changes:
     symbol_component: battle_overlay
 ```
 
-Accepted symbol files are either a JSON array or an object with a `symbols` array. Each record carries at least `component`, runtime `address`, component-relative `offset`, and `name`; `instruction_set` may be `arm`, `thumb`, or null. ARM symbols become `.definearmlabel`, Thumb symbols become `.definethumblabel`, and neutral/data labels become `.definelabel`.
+Accepted symbol files are a JSON array or an object with a `symbols` array. Records carry component identity, runtime address, component-relative offset, name, and optional `instruction_set` (`arm`, `thumb`, or null). Runtime address alone is not treated as globally unique because overlays may overlap in RAM.
 
-Before armips runs, every imported symbol is checked against the selected target's uncompressed RAM mapping. Address/offset mismatches, out-of-range symbols, unsafe identifiers, duplicate names, or missing requested components fail closed.
+Imported symbols are validated against the selected target mapping. Address/offset disagreement, out-of-range symbols, unsafe identifiers, duplicate names, or a missing requested component fail closed.
 
-Example fragment using an imported symbol:
+## Guarded hook injection
 
-```asm
-.org PatchSite
-.word 0xAABBCCDD
-```
-
-### Automatic ARM/Thumb hook injection
-
-`type: inject` builds a guarded hook from a named imported symbol, places the payload in reserved free space, and automatically returns to the first instruction after the overwritten hook. Imported symbol metadata selects ARM versus Thumb behavior.
+`type: inject` builds a guarded hook from a named imported symbol, installs an assembly payload in a declared cave, and returns to the first instruction after the overwritten hook.
 
 ```yaml
 changes:
@@ -206,41 +201,39 @@ changes:
     cave: auto
     reserve: 32
     fill: "00"
-    symbols: reports/battle_damage.sym
 ```
 
-The payload is a positionless fragment assembled in the hook symbol's instruction set. The toolkit owns `.org`, architecture/mode selection, the generated hook/veneer, the cave label, and the return path. File-owning/import directives remain forbidden.
+For Thumb hooks, a reachable cave uses a 2-byte Thumb-1 branch. A farther cave uses an 8-byte literal-load veneer and requires an explicit `scratch_register: r0` through `r7`, making clobbering explicit.
 
-For Thumb symbols, a cave inside the Thumb-1 unconditional branch range uses a 2-byte short hook. A farther cave uses an 8-byte literal-load veneer. Long Thumb hooks require `scratch_register: r0` through `r7`; that register is explicitly documented as clobbered by the veneer. The long return path uses the same scratch register and a fixed 8-byte return stub at the end of the reserved cave.
+`cave: auto` remains deliberately conservative: it searches only the **trailing** run of the declared fill byte in the selected target, aligned to four bytes. An explicit cave may instead be supplied as a CPU address. The entire reserved cave must already contain the declared fill byte.
 
-```yaml
-changes:
-  - type: inject
-    target: arm9
-    symbol_file: analysis/symbols.json
-    hook: ThumbBattleDamage
-    expected: "05 06 07 08 09 0A 0B 0C"
-    script: asm/thumb_payload.asm
-    cave: auto
-    reserve: 24
-    scratch_register: r3
+After armips runs, the toolkit diffs the target and rejects any write outside the selected hook width or declared cave reserve. Hook/cave overlap, target resizing, expected-byte mismatch, and bounded-write violations fail the build.
+
+## Free-space discovery
+
+Use `rommod caves` to inspect broader candidate fill runs without weakening `cave: auto`:
+
+```bash
+rommod caves my-mod --target overlay9:3 --min-size 48 --fill FF --alignment 8
 ```
 
-`cave: auto` searches only the **trailing** run of the requested fill byte in the selected target, aligned to four bytes. It never treats an arbitrary internal zero run as executable free space. An explicit cave may instead be supplied as a CPU address. The reserved cave must already contain exactly the declared fill byte.
+The scanner verifies the source lock, reads the selected code target, identifies maximal fill-byte runs, aligns each candidate in CPU-address space, and reports:
 
-After armips runs, the toolkit diffs the complete target and rejects any changed byte outside the selected hook width or declared cave reserve. ARM hooks use 4 bytes, short Thumb hooks use 2 bytes, and long Thumb veneers use 8 bytes. The hook and cave cannot overlap, target size cannot change, and the configured ROM output is not written when any guard fails. Resolved hook/cave addresses, hook mode, hook size, and any scratch register are recorded in `reports/build.json`.
+- target-relative offset;
+- runtime CPU address;
+- usable aligned size;
+- fill byte;
+- whether the run is trailing.
 
-### Freestanding ARM C payload injection
+A discovered run is only a **candidate**. It is not proof that the region is unused or executable-safe. Discovery is read-only and never feeds internal runs into injection automatically. If analysis establishes that an internal candidate is safe, use its reported CPU address explicitly as the manifest `cave`; the normal injection fill and bounded-write guards still apply.
 
-`type: c_inject` turns a small C function into ARM machine code and installs it behind the same guarded 4-byte ARM hook used by the assembly injector. The required entry point is `rommod_payload`.
+## Freestanding C payload injection
+
+`type: c_inject` compiles freestanding C into ARM machine code and installs it behind the guarded ARM/Thumb hook pipeline. The required entry point is `rommod_payload`.
+
+Single source example:
 
 ```yaml
-tools:
-  armips: /path/to/armips
-  clang: /path/to/clang
-  ld_lld: /path/to/ld.lld
-  llvm_objcopy: /path/to/llvm-objcopy
-
 changes:
   - type: c_inject
     target: arm9
@@ -249,27 +242,54 @@ changes:
     expected: "05 06 07 08"
     source: src/battle_damage.c
     cave: auto
-    reserve: 32
+    reserve: 48
     fill: "00"
 ```
 
-Example payload:
+Multiple translation units can be linked as one payload:
 
-```c
-extern int GameHelper(int value);
-
-int rommod_payload(int value) {
-    return GameHelper(value + 7);
-}
+```yaml
+changes:
+  - type: c_inject
+    target: arm9
+    symbol_file: analysis/symbols.json
+    hook: BattleDamage
+    expected: "05 06 07 08"
+    sources:
+      - src/payload.c
+      - src/helper.c
+    include_dirs:
+      - include
+      - src/common
+    defines:
+      ROMMOD_FEATURE: "1"
+      DAMAGE_SCALE: "3"
+    cave: auto
+    reserve: 96
+    fill: "00"
 ```
 
-The compiler runs freestanding for ARM946E-S in ARM mode with no standard library, no PIC/PIE, and function/data sections enabled. LLD places `rommod_payload` at the toolkit-selected cave address, and `llvm-objcopy` extracts only the executable image. Read-only constants may travel with the code; writable `.data`, `.bss`, COMMON storage, and a missing `rommod_payload` entry fail the build. The compiled payload must fit inside the declared cave after the toolkit's 8-byte call/return wrapper.
+A C injection provides exactly one of `source` or `sources`. Shared `include_dirs` are resolved inside the project and passed to every translation unit. `defines` are validated and supplied consistently to every translation unit as preprocessor definitions.
 
-The same component-aware analysis JSON used for the hook is also validated before linking C externs. ARM function labels and neutral/data labels in the selected component are exposed to LLD as absolute addresses. Thumb function labels receive generated ARM veneers instead of unsafe direct ARM branches. Each veneer loads `thumb_address | 1` into `r12/ip` and branches through it, explicitly switching the CPU into Thumb state. Veneers live in separate link sections and LLD `--gc-sections` removes any that the C payload does not reference.
+The compiler runs freestanding for ARM946E-S in ARM mode with no standard library, PIC/PIE, writable static data, or COMMON storage. LLD places `rommod_payload` at the toolkit-selected code address and `llvm-objcopy` extracts the executable image. The compiled image must fit inside the declared reserve after the toolkit bridge/wrapper.
 
-The wrapper branches from the hook to the cave, calls `rommod_payload` with `BL`, then branches back to `hook + 4`. It does **not** replay the overwritten instruction. Normal ARM procedure-call rules apply: C may modify caller-saved registers (`r0`-`r3`, `r12`, `lr`) and condition flags, so hook selection/payload design must account for the state expected by the original game code.
+C can call validated ARM/data symbols directly. Thumb function symbols receive generated ARM-to-Thumb veneers that load `thumb_address | 1` into `r12/ip` and branch through it; unused veneer sections are garbage-collected by LLD.
 
-Compiler paths resolve from `tools.*`, then their `ROMMOD_*` environment overrides, then `PATH`. The build report records the resolved Clang, LLD, and llvm-objcopy versions plus C payload size, load address, and whether Thumb interworking was linked. Any compiler, linker, assembler, expected-byte, cave, size, or bounded-write failure prevents the configured ROM output from being written.
+C injection also supports Thumb hook sites. The toolkit selects the appropriate short/long Thumb entry bridge, switches into ARM state for the compiled payload, and returns to the correct Thumb continuation address. Long Thumb entry still requires an explicit low scratch register.
+
+Build reports record C source configuration, include directories/defines where configured, payload size/address, hook mode/size, Thumb interworking state, and resolved Clang/LLD/objcopy versions.
+
+## Patch distribution
+
+`rommod patch` always builds the source-locked project first, creates a patch from the verified source to that exact rebuilt target, applies the new patch into a temporary verification file, and accepts the patch only if the reconstructed bytes hash exactly to the built target.
+
+```bash
+rommod patch my-mod --format bps
+rommod patch my-mod --format ips --output patches/release.ips
+rommod patch my-mod --format xdelta --output patches/release.xdelta
+```
+
+BPS/IPS use Flips. xdelta uses xdelta3. Tool paths may be configured through the toolkit tool configuration/environment resolution path. Patch reports record source, target, and patch hashes plus the resolved patch tool/version and round-trip verification state.
 
 ## Extraction output
 
@@ -290,7 +310,7 @@ build/extracted/
         └── <id>.bin
 ```
 
-Extraction is for inspection and authoring. Builds do **not** blindly rebuild from this directory; they start from the verified source ROM and apply only manifest-declared changes.
+Extraction is for inspection and authoring. Builds do not blindly rebuild from this directory; they start from the verified source ROM and apply only manifest-declared changes.
 
 ## Build safety
 
@@ -307,7 +327,7 @@ An NDS build performs this sequence:
 9. Reload it through a fresh NDS parser.
 10. Confirm every touched target survived rebuild exactly.
 11. Atomically write the output ROM.
-12. Record hashes, mutations, validation state, and the `ndspy` version in `reports/build.json`.
+12. Record hashes, mutations, validation state, and tool versions in `reports/build.json`.
 
 A failed mutation or validation stage does not write a partial configured output.
 
@@ -327,32 +347,26 @@ This is structural verification, not proof that a game behaves correctly in an e
 
 ## Rebuild equivalence
 
-`ndspy` may repack regions, align sections, update FAT offsets, and recalculate header values when saving. Therefore an untouched rebuild is expected to be deterministic and structurally equivalent, but it is not universally required to be byte-for-byte identical to the source ROM.
+`ndspy` may repack regions, align sections, update FAT offsets, and recalculate header values when saving. An untouched rebuild is expected to be deterministic and structurally equivalent, but it is not universally required to be byte-for-byte identical to the source ROM.
 
 ## Tests
 
 The test suite uses a programmatically generated synthetic Nintendo DS fixture; no proprietary commercial ROM is required.
 
-```bash
-pytest -q
-```
-
-Coverage includes project initialization, source mismatch rejection, load/save/reload, metadata normalization, NitroFS extraction/replacement, overlay access, address mapping, guarded patch failures, deterministic builds, structural corruption detection, the complete CLI workflow, armips manifest/tool resolution, fragment safety, component-aware symbol import, address/offset validation, real ARM9/ARM7/overlay assembly builds, guarded ARM hook injection, short Thumb branches, explicit-scratch long Thumb veneers, freestanding ARM C compilation, writable-data rejection, bounded C injection, validated C calls into imported ARM game symbols, and generated ARM-to-Thumb interworking veneers.
+Coverage includes project/source locking, load/save/reload, extraction and NitroFS replacement, overlay access, address mapping, guarded byte patches, deterministic builds, structural validation, CLI workflows, real armips patching, component-aware symbol imports, ARM/Thumb hook injection, freestanding C compilation, multi-source/include/define handling, C-to-Thumb interworking, read-only free-space discovery, and verified BPS/IPS/xdelta distribution.
 
 ## Deferred NDS work
 
-The current NDS path does **not** yet include:
+The current NDS path intentionally does **not** yet include:
 
-- broader code-cave/free-space discovery beyond guarded trailing fill runs;
-- direct `c_inject` entry from Thumb hook sites;
-- user-authored multi-object C/C++ builds and richer runtime support;
+- automatic proof that an internal fill-run candidate is unused/executable-safe;
+- C++ runtime support, constructors, exceptions, or a richer freestanding runtime;
 - Keystone or Unicorn integration;
-- BPS/IPS/xdelta patch-file generation;
 - NitroFS create/delete operations;
 - emulator-driven behavioral validation.
 
-The next coding-focused NDS work can extend `c_inject` to Thumb hook sites and then add user-authored multi-source linking, while patch distribution and broader free-space management remain separate follow-up layers.
+These are follow-up layers rather than blockers for the completed NDS modification pipeline.
 
 ## PSP status
 
-PSP source references are intentionally parked. PSP support will begin only after the NDS modification path is mature enough to establish the shared interfaces without forcing PSP-specific design into the NDS foundation.
+PSP source references remain intentionally parked while the NDS-first architecture is established. PSP work can build on the shared project/build/verification/tool-resolution interfaces without forcing PSP-specific behavior into the NDS implementation.
