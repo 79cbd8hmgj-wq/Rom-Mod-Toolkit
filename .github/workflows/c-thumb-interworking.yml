@@ -19,7 +19,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build clang lld llvm
+          sudo apt-get install -y build-essential cmake ninja-build clang lld llvm
 
       - name: Build armips
         run: |
@@ -29,6 +29,26 @@ jobs:
           ARMIPS_PATH="$(find "$RUNNER_TEMP/armips-build" -type f -name armips -perm -111 | head -1)"
           test -n "$ARMIPS_PATH"
           echo "ROMMOD_ARMIPS=$ARMIPS_PATH" >> "$GITHUB_ENV"
+
+      - name: Build Flips
+        run: |
+          git clone --depth 1 https://github.com/Alcaro/Flips.git "$RUNNER_TEMP/flips-src"
+          make -C "$RUNNER_TEMP/flips-src" TARGET=cli CFLAGS='-O2' -j2
+          test -x "$RUNNER_TEMP/flips-src/flips"
+          echo "ROMMOD_FLIPS=$RUNNER_TEMP/flips-src/flips" >> "$GITHUB_ENV"
+
+      - name: Build xdelta3
+        run: |
+          git clone --depth 1 https://github.com/jmacd/xdelta.git "$RUNNER_TEMP/xdelta-src"
+          cmake -S "$RUNNER_TEMP/xdelta-src/xdelta3" -B "$RUNNER_TEMP/xdelta-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXD3_ARMOR=OFF \
+            -DXD3_LZMA_MODE=off \
+            -DXD3_BUILD_TESTS=OFF \
+            -DXD3_BUILD_LIB=OFF
+          cmake --build "$RUNNER_TEMP/xdelta-build"
+          test -x "$RUNNER_TEMP/xdelta-build/xdelta3"
+          echo "ROMMOD_XDELTA3=$RUNNER_TEMP/xdelta-build/xdelta3" >> "$GITHUB_ENV"
 
       - name: Resolve LLVM tools
         run: |
