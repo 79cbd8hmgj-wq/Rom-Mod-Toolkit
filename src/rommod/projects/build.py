@@ -187,6 +187,7 @@ def _change_report(change: Change) -> dict[str, object]:
             "cave": change.cave,
             "reserve": change.reserve,
             "fill": f"{change.fill:02X}",
+            "language": change.language,
         }
         if change.source is not None:
             result["source"] = change.source
