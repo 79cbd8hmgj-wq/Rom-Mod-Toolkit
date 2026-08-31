@@ -194,6 +194,8 @@ def _change_report(change: Change) -> dict[str, object]:
             result["sources"] = list(change.sources)
         if change.include_dirs:
             result["include_dirs"] = list(change.include_dirs)
+        if change.defines:
+            result["defines"] = list(change.defines)
         if change.symbol_component is not None:
             result["symbol_component"] = change.symbol_component
         if change.scratch_register is not None:
