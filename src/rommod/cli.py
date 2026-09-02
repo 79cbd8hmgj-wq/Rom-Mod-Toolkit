@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from rommod.domains.pokemon.analysis import analyze_repository
+from rommod.domains.pokemon.ledger import apply_ledger, load_ledger, plan_ledger
 from rommod.domains.pokemon.loader import load_repository_index
 from rommod.errors import BuildError, RomModError
 from rommod.patching.distribution import create_project_patch
@@ -65,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_analyze_cmd.add_argument("root", type=Path)
     source_analyze_cmd.add_argument("--domain", choices=("pokemon",), default="pokemon")
+
+    source_ledger_cmd = subparsers.add_parser(
+        "source-ledger",
+        help="validate or apply an approved source-edit ledger",
+    )
+    source_ledger_cmd.add_argument("root", type=Path)
+    source_ledger_cmd.add_argument("ledger", type=Path)
+    source_ledger_cmd.add_argument(
+        "--apply",
+        action="store_true",
+        help="write validated changes; without this flag the command is read-only",
+    )
     return parser
 
 
@@ -104,6 +117,39 @@ def _source_analysis_payload(root: Path, domain: str) -> dict[str, object]:
         "evolution_count": len(index.evolutions),
         "warnings": list(index.warnings),
         "findings": findings,
+    }
+
+
+def _source_ledger_payload(root: Path, ledger_path: Path, *, apply: bool) -> dict[str, object]:
+    ledger = load_ledger(ledger_path)
+    plan = apply_ledger(root, ledger) if apply else plan_ledger(root, ledger)
+    files: list[dict[str, object]] = []
+    for planned_file in plan.files:
+        changes = []
+        for change in planned_file.changes:
+            changes.append(
+                {
+                    "species": change.species,
+                    "operation": change.operation,
+                    "before": list(change.before) if change.before is not None else None,
+                    "after": list(change.after) if change.after is not None else None,
+                }
+            )
+        files.append(
+            {
+                "source_path": str(planned_file.source_path),
+                "source_sha256": planned_file.source_sha256,
+                "result_sha256": planned_file.result_sha256,
+                "changes": changes,
+            }
+        )
+    return {
+        "domain": ledger.domain,
+        "root": str(root.resolve()),
+        "ledger": str(ledger_path),
+        "applied": plan.applied,
+        "file_count": len(plan.files),
+        "files": files,
     }
 
 
@@ -169,6 +215,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "source-analyze":
             print(json.dumps(_source_analysis_payload(args.root, args.domain), indent=2, sort_keys=True))
+            return 0
+        if args.command == "source-ledger":
+            print(
+                json.dumps(
+                    _source_ledger_payload(args.root, args.ledger, apply=args.apply),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         parser.print_help()
         return 0
