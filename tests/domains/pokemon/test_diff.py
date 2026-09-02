@@ -12,6 +12,8 @@ def _write_species(
     *,
     stats: dict[str, int],
     moves: list[list[object]],
+    types: list[str] | None = None,
+    abilities: list[str] | None = None,
 ) -> None:
     path = root / "res" / "pokemon" / identifier / "data.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -19,8 +21,8 @@ def _write_species(
         json.dumps(
             {
                 "base_stats": stats,
-                "types": ["TYPE_ROCK", "TYPE_GROUND"],
-                "abilities": ["ABILITY_ROCK_HEAD"],
+                "types": types or ["TYPE_ROCK", "TYPE_GROUND"],
+                "abilities": abilities or ["ABILITY_ROCK_HEAD"],
                 "learnset": {"by_level": moves},
                 "evolutions": [],
                 "pokedex_data": {"en": {"name": identifier.upper()}},
@@ -85,3 +87,35 @@ def test_diff_repositories_reports_semantic_stats_and_learnset_changes(tmp_path:
             "after_level": 35,
         },
     ]
+
+
+def test_diff_repositories_reports_type_and_ability_changes(tmp_path: Path) -> None:
+    before = tmp_path / "before"
+    after = tmp_path / "after"
+    _write_species(
+        before,
+        "rapidash",
+        stats=_stats(attack=100),
+        moves=[[40, "MOVE_FURY_ATTACK"]],
+        types=["TYPE_FIRE", "TYPE_FIRE"],
+        abilities=["ABILITY_RUN_AWAY", "ABILITY_FLASH_FIRE"],
+    )
+    _write_species(
+        after,
+        "rapidash",
+        stats=_stats(attack=100),
+        moves=[[40, "MOVE_FURY_ATTACK"]],
+        types=["TYPE_FIRE", "TYPE_FAIRY"],
+        abilities=["ABILITY_FLASH_FIRE", "ABILITY_FLAME_BODY"],
+    )
+
+    species = diff_repositories(before, after).to_dict()["species"][0]
+
+    assert species["types"] == {
+        "before": ["TYPE_FIRE", "TYPE_FIRE"],
+        "after": ["TYPE_FIRE", "TYPE_FAIRY"],
+    }
+    assert species["abilities"] == {
+        "before": ["ABILITY_RUN_AWAY", "ABILITY_FLASH_FIRE"],
+        "after": ["ABILITY_FLASH_FIRE", "ABILITY_FLAME_BODY"],
+    }
