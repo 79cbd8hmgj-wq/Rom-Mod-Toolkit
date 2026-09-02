@@ -14,6 +14,7 @@ from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.diff import diff_repositories
 from rommod.domains.pokemon.ledger import apply_ledger, load_ledger, plan_ledger
 from rommod.domains.pokemon.loader import load_repository_index
+from rommod.domains.pokemon.validation import validate_repository
 from rommod.errors import BuildError, RomModError
 from rommod.patching.distribution import create_project_patch
 from rommod.platforms.nds.extract import extract_project
@@ -47,6 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_cmd = subparsers.add_parser("build", help="build an NDS mod or discovered source project")
     build_cmd.add_argument("project", type=Path)
+
+    validate_cmd = subparsers.add_parser(
+        "validate",
+        help="validate a source project or structurally verify a manifest NDS project",
+    )
+    validate_cmd.add_argument("target", type=Path)
 
     verify_cmd = subparsers.add_parser("verify", help="verify an NDS ROM or project output")
     verify_cmd.add_argument("target", type=Path)
@@ -216,6 +223,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
             return 0
+        if args.command == "validate":
+            if (args.target / "rommod.yaml").is_file():
+                report = verify_project(args.target)
+                print(json.dumps(asdict(report), indent=2, sort_keys=True))
+                return 0
+            report = validate_repository(args.target)
+            print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+            return 0 if report.valid else 1
         if args.command == "verify":
             report = verify_project(args.target) if args.target.is_dir() else verify_rom(args.target)
             print(json.dumps(asdict(report), indent=2, sort_keys=True))
