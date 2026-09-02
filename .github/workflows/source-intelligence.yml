@@ -21,14 +21,17 @@ jobs:
 
       - name: Compile source-intelligence code and tests
         run: |
-          python -m compileall -q src/rommod tests/analysis tests/domains tests/test_cli_source_intelligence.py tests/integration/test_source_intelligence_c3d2.py 2>/dev/null || \
-          python -m compileall -q src/rommod tests/analysis
+          python -m compileall -q src/rommod tests/analysis tests/domains
+          for path in tests/test_cli_source_*.py tests/integration/test_source_intelligence_*.py; do
+            test -f "$path" && python -m compileall -q "$path"
+          done
 
       - name: Run source-intelligence tests
         run: |
           paths=()
           test -d tests/analysis && paths+=(tests/analysis)
           test -d tests/domains && paths+=(tests/domains)
-          test -f tests/test_cli_source_intelligence.py && paths+=(tests/test_cli_source_intelligence.py)
-          test -f tests/integration/test_source_intelligence_c3d2.py && paths+=(tests/integration/test_source_intelligence_c3d2.py)
+          for path in tests/test_cli_source_*.py tests/integration/test_source_intelligence_*.py; do
+            test -f "$path" && paths+=("$path")
+          done
           pytest -q "${paths[@]}"
