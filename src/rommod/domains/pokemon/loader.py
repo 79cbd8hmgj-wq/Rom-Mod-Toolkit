@@ -40,26 +40,42 @@ def _base_stats(data: dict[str, Any], relative_path: Path) -> tuple[int, int, in
     for field in _STAT_FIELDS:
         value = raw.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise _fail(relative_path, field)
+            raise _fail(relative_path, f"base_stats.{field}")
         values.append(value)
     return tuple(values)  # type: ignore[return-value]
 
 
+def _display_name(data: dict[str, Any], relative_path: Path) -> str:
+    pokedex_data = data.get("pokedex_data")
+    if not isinstance(pokedex_data, dict):
+        raise _fail(relative_path, "pokedex_data")
+    english = pokedex_data.get("en")
+    if not isinstance(english, dict):
+        raise _fail(relative_path, "pokedex_data.en")
+    name = english.get("name")
+    if not isinstance(name, str) or not name:
+        raise _fail(relative_path, "pokedex_data.en.name")
+    return name
+
+
 def _learnset(data: dict[str, Any], relative_path: Path) -> tuple[LearnsetEntry, ...]:
-    raw = data.get("level_up_moves")
+    learnset = data.get("learnset")
+    if not isinstance(learnset, dict):
+        raise _fail(relative_path, "learnset")
+    raw = learnset.get("by_level")
     if not isinstance(raw, list):
-        raise _fail(relative_path, "level_up_moves")
+        raise _fail(relative_path, "learnset.by_level")
 
     entries: list[LearnsetEntry] = []
     for index, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise _fail(relative_path, f"level_up_moves[{index}]")
-        level = item.get("level")
-        move = item.get("move")
+        field = f"learnset.by_level[{index}]"
+        if not isinstance(item, list) or len(item) != 2:
+            raise _fail(relative_path, field)
+        level, move = item
         if not isinstance(level, int) or isinstance(level, bool) or level < 0:
-            raise _fail(relative_path, f"level_up_moves[{index}].level")
+            raise _fail(relative_path, field, "has an invalid level")
         if not isinstance(move, str) or not move:
-            raise _fail(relative_path, f"level_up_moves[{index}].move")
+            raise _fail(relative_path, field, "has an invalid move")
         entries.append(LearnsetEntry(level=level, move=move))
     return tuple(entries)
 
@@ -69,14 +85,10 @@ def _species_from_file(root: Path, path: Path) -> SpeciesRecord:
     relative = document.relative_path
     data = document.data
 
-    name = data.get("name")
-    if not isinstance(name, str) or not name:
-        raise _fail(relative, "name")
-
     identifier = path.parent.name.casefold()
     return SpeciesRecord(
         identifier=identifier,
-        display_name=name,
+        display_name=_display_name(data, relative),
         source_path=relative,
         types=_string_list(data, relative, "types"),
         base_stats=_base_stats(data, relative),
