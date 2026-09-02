@@ -11,6 +11,7 @@ from pathlib import Path
 from rommod.dev.build import build_source_project
 from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
+from rommod.domains.pokemon.diff import diff_repositories
 from rommod.domains.pokemon.ledger import apply_ledger, load_ledger, plan_ledger
 from rommod.domains.pokemon.loader import load_repository_index
 from rommod.errors import BuildError, RomModError
@@ -71,6 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_analyze_cmd.add_argument("root", type=Path)
     source_analyze_cmd.add_argument("--domain", choices=("pokemon",), default="pokemon")
+
+    source_diff_cmd = subparsers.add_parser(
+        "source-diff",
+        help="compare two source repositories semantically",
+    )
+    source_diff_cmd.add_argument("before", type=Path)
+    source_diff_cmd.add_argument("after", type=Path)
+    source_diff_cmd.add_argument("--domain", choices=("pokemon",), default="pokemon")
 
     source_ledger_cmd = subparsers.add_parser(
         "source-ledger",
@@ -241,6 +250,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "source-analyze":
             print(json.dumps(_source_analysis_payload(args.root, args.domain), indent=2, sort_keys=True))
+            return 0
+        if args.command == "source-diff":
+            if args.domain != "pokemon":
+                raise RomModError(f"unsupported source-diff domain: {args.domain}")
+            print(
+                json.dumps(
+                    diff_repositories(args.before, args.after).to_dict(),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
         if args.command == "source-ledger":
             print(
