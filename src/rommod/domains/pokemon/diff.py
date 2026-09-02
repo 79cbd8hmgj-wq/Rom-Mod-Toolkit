@@ -53,6 +53,10 @@ class SpeciesDiff:
     bst_before: int
     bst_after: int
     learnset: tuple[LearnsetChange, ...]
+    types_before: tuple[str, ...]
+    types_after: tuple[str, ...]
+    abilities_before: tuple[str, ...]
+    abilities_after: tuple[str, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -62,6 +66,16 @@ class SpeciesDiff:
             "bst": (
                 {"before": self.bst_before, "after": self.bst_after}
                 if self.bst_before != self.bst_after
+                else None
+            ),
+            "types": (
+                {"before": list(self.types_before), "after": list(self.types_after)}
+                if self.types_before != self.types_after
+                else None
+            ),
+            "abilities": (
+                {"before": list(self.abilities_before), "after": list(self.abilities_after)}
+                if self.abilities_before != self.abilities_after
                 else None
             ),
             "learnset": [change.to_dict() for change in self.learnset],
@@ -119,7 +133,12 @@ def _diff_learnset(before: SpeciesRecord, after: SpeciesRecord) -> tuple[Learnse
 def _diff_species(before: SpeciesRecord, after: SpeciesRecord) -> SpeciesDiff | None:
     stats = _diff_stats(before, after)
     learnset = _diff_learnset(before, after)
-    if not stats and not learnset:
+    if (
+        not stats
+        and not learnset
+        and before.types == after.types
+        and before.abilities == after.abilities
+    ):
         return None
     return SpeciesDiff(
         species=after.identifier,
@@ -128,6 +147,10 @@ def _diff_species(before: SpeciesRecord, after: SpeciesRecord) -> SpeciesDiff | 
         bst_before=sum(before.base_stats),
         bst_after=sum(after.base_stats),
         learnset=learnset,
+        types_before=before.types,
+        types_after=after.types,
+        abilities_before=before.abilities,
+        abilities_after=after.abilities,
     )
 
 
