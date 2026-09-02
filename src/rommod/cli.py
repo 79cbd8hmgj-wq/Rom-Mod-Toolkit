@@ -8,6 +8,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.ledger import apply_ledger, load_ledger, plan_ledger
 from rommod.domains.pokemon.loader import load_repository_index
@@ -28,6 +29,9 @@ _HEX = set("0123456789abcdef")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rommod", description="ROM Mod Toolkit")
     subparsers = parser.add_subparsers(dest="command")
+
+    scan_parser = subparsers.add_parser("scan", help="discover an existing ROM modification project")
+    scan_parser.add_argument("root", type=Path)
 
     init_parser = subparsers.add_parser("init", help="initialize an NDS mod project")
     init_parser.add_argument("source", type=Path)
@@ -157,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "scan":
+            report = scan_project(args.root)
+            write_scan_reports(report)
+            print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+            return 0
         if args.command == "init":
             manifest = init_project(args.source, args.project)
             print(f"Initialized {args.project} ({manifest.source.sha256})")
