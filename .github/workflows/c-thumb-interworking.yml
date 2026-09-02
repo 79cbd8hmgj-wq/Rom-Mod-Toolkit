@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'feature/nds-*'
+      - '!feature/nds-source-intelligence'
   workflow_dispatch:
 
 jobs:
