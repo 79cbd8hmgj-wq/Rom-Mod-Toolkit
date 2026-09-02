@@ -278,6 +278,13 @@ def plan_ledger(root: Path, ledger: PokemonLedger) -> LedgerPlan:
 def apply_ledger(root: Path, ledger: PokemonLedger) -> LedgerPlan:
     """Preflight every ledger edit, then apply guarded atomic writes per source file."""
 
+    unpinned = [change.species for change in ledger.changes if change.source_sha256 is None]
+    if unpinned:
+        species = ", ".join(sorted(set(unpinned)))
+        raise SourceMismatchError(
+            f"source_sha256 is required to apply ledger changes; unpinned species: {species}"
+        )
+
     prepared = _prepare_ledger(root, ledger)
     snapshot = RepositorySnapshot(root)
     written: list[PlannedFile] = []
