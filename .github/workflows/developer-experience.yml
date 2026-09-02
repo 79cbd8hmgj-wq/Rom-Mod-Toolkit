@@ -1,0 +1,26 @@
+name: Developer experience verification
+
+on:
+  push:
+    branches:
+      - 'feature/developer-experience'
+  workflow_dispatch:
+
+jobs:
+  developer-experience:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install toolkit
+        run: python -m pip install -e '.[test]'
+
+      - name: Compile toolkit and tests
+        run: python -m compileall -q src/rommod tests
+
+      - name: Run complete test suite
+        run: pytest -q
