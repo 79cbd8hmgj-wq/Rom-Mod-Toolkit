@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -35,8 +36,9 @@ def _species(root: Path) -> Path:
     return path
 
 
-def _ledger(root: Path) -> Path:
+def _ledger(root: Path, source: Path) -> Path:
     path = root / "approved-ledger.json"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     _write_json(
         path,
         {
@@ -45,6 +47,7 @@ def _ledger(root: Path) -> Path:
             "changes": [
                 {
                     "species": "primeape",
+                    "source_sha256": digest,
                     "operation": "replace_level_move",
                     "from": [28, "MOVE_RAGE"],
                     "to": [29, "MOVE_BRICK_BREAK"],
@@ -57,7 +60,7 @@ def _ledger(root: Path) -> Path:
 
 def test_source_ledger_cli_defaults_to_dry_run(tmp_path: Path, capsys) -> None:
     source = _species(tmp_path)
-    ledger = _ledger(tmp_path)
+    ledger = _ledger(tmp_path, source)
     before = source.read_bytes()
 
     exit_code = main(["source-ledger", str(tmp_path), str(ledger)])
@@ -75,7 +78,7 @@ def test_source_ledger_cli_defaults_to_dry_run(tmp_path: Path, capsys) -> None:
 
 def test_source_ledger_cli_requires_explicit_apply_to_write(tmp_path: Path, capsys) -> None:
     source = _species(tmp_path)
-    ledger = _ledger(tmp_path)
+    ledger = _ledger(tmp_path, source)
 
     exit_code = main(["source-ledger", str(tmp_path), str(ledger), "--apply"])
 
