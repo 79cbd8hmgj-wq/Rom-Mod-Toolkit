@@ -8,6 +8,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from rommod.dev.build import build_source_project
 from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.ledger import apply_ledger, load_ledger, plan_ledger
@@ -43,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser = subparsers.add_parser("extract", help="extract an NDS project snapshot")
     extract_parser.add_argument("project", type=Path)
 
-    build_cmd = subparsers.add_parser("build", help="build an NDS mod project")
+    build_cmd = subparsers.add_parser("build", help="build an NDS mod or discovered source project")
     build_cmd.add_argument("project", type=Path)
 
     verify_cmd = subparsers.add_parser("verify", help="verify an NDS ROM or project output")
@@ -177,18 +178,34 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(extract_project(args.project), indent=2, sort_keys=True))
             return 0
         if args.command == "build":
-            result = build_project(args.project)
-            print(
-                json.dumps(
-                    {
-                        "output": str(result.output_path),
-                        "report": str(result.report_path),
-                        "sha256": result.output_sha256,
-                    },
-                    indent=2,
-                    sort_keys=True,
+            if (args.project / "rommod.yaml").is_file():
+                result = build_project(args.project)
+                print(
+                    json.dumps(
+                        {
+                            "output": str(result.output_path),
+                            "report": str(result.report_path),
+                            "sha256": result.output_sha256,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
                 )
-            )
+            else:
+                result = build_source_project(args.project)
+                print(
+                    json.dumps(
+                        {
+                            "mode": "source",
+                            "build_system": result.build_system,
+                            "command": list(result.command),
+                            "outputs": list(result.outputs),
+                            "report": str(result.report_path),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
             return 0
         if args.command == "verify":
             report = verify_project(args.target) if args.target.is_dir() else verify_rom(args.target)
