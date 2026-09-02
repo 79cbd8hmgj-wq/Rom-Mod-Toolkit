@@ -8,6 +8,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from rommod.domains.pokemon.analysis import analyze_repository
+from rommod.domains.pokemon.loader import load_repository_index
 from rommod.errors import BuildError, RomModError
 from rommod.patching.distribution import create_project_patch
 from rommod.platforms.nds.extract import extract_project
@@ -56,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     patch_cmd.add_argument("project", type=Path)
     patch_cmd.add_argument("--format", choices=("bps", "ips", "xdelta"), required=True)
     patch_cmd.add_argument("--output", type=Path)
+
+    source_analyze_cmd = subparsers.add_parser(
+        "source-analyze",
+        help="analyze a source repository for semantic modification opportunities",
+    )
+    source_analyze_cmd.add_argument("root", type=Path)
+    source_analyze_cmd.add_argument("--domain", choices=("pokemon",), default="pokemon")
     return parser
 
 
@@ -72,6 +81,30 @@ def _parse_fill_byte(value: str) -> int:
     if len(compact) != 2 or any(ch not in _HEX for ch in compact):
         raise BuildError("--fill must be one hexadecimal byte")
     return int(compact, 16)
+
+
+def _source_analysis_payload(root: Path, domain: str) -> dict[str, object]:
+    if domain != "pokemon":
+        raise RomModError(f"unsupported source-analysis domain: {domain}")
+
+    index = load_repository_index(root)
+    findings: list[dict[str, object]] = []
+    for finding in analyze_repository(index):
+        item = asdict(finding)
+        source_path = item.get("source_path")
+        if source_path is not None:
+            item["source_path"] = str(source_path)
+        findings.append(item)
+
+    return {
+        "domain": domain,
+        "root": str(index.root),
+        "species_count": len(index.species),
+        "move_count": len(index.moves),
+        "evolution_count": len(index.evolutions),
+        "warnings": list(index.warnings),
+        "findings": findings,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -133,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
+            return 0
+        if args.command == "source-analyze":
+            print(json.dumps(_source_analysis_payload(args.root, args.domain), indent=2, sort_keys=True))
             return 0
         parser.print_help()
         return 0
