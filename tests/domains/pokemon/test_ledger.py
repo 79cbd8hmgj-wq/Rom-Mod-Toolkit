@@ -154,7 +154,7 @@ def test_apply_insert_orders_by_level_without_reordering_existing_same_level_ent
 
 
 def test_duplicate_insert_is_rejected(tmp_path: Path) -> None:
-    source = _write_species(tmp_path, "persian", [[29, "MOVE_SWITCHEROO"]])
+    _write_species(tmp_path, "persian", [[29, "MOVE_SWITCHEROO"]])
     ledger = load_ledger(
         _ledger_file(
             tmp_path,
@@ -199,6 +199,33 @@ def test_source_sha_mismatch_is_rejected_before_write(tmp_path: Path) -> None:
     )
 
     with pytest.raises(SourceMismatchError, match="primeape"):
+        apply_ledger(tmp_path, ledger)
+    assert source.read_bytes() == before
+
+
+def test_apply_requires_every_target_to_be_sha_pinned(tmp_path: Path) -> None:
+    source = _write_species(tmp_path, "primeape", [[28, "MOVE_RAGE"]])
+    before = source.read_bytes()
+    ledger = load_ledger(
+        _ledger_file(
+            tmp_path,
+            {
+                "version": 1,
+                "domain": "pokemon",
+                "changes": [
+                    {
+                        "species": "primeape",
+                        "operation": "replace_level_move",
+                        "from": [28, "MOVE_RAGE"],
+                        "to": [29, "MOVE_BRICK_BREAK"],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert plan_ledger(tmp_path, ledger).applied is False
+    with pytest.raises(SourceMismatchError, match="source_sha256"):
         apply_ledger(tmp_path, ledger)
     assert source.read_bytes() == before
 
