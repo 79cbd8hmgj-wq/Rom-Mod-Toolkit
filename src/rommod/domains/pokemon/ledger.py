@@ -25,6 +25,17 @@ _SUPPORTED_OPERATIONS = {
     "insert_level_move",
     "replace_level_move",
     "remove_level_move",
+    "set_base_stat",
+    "set_types",
+    "set_abilities",
+}
+_STAT_FIELDS = {
+    "hp",
+    "attack",
+    "defense",
+    "special_attack",
+    "special_defense",
+    "speed",
 }
 
 
@@ -32,8 +43,9 @@ _SUPPORTED_OPERATIONS = {
 class LedgerChange:
     species: str
     operation: str
-    before: tuple[int, str] | None = None
-    after: tuple[int, str] | None = None
+    field: str | None = None
+    before: object | None = None
+    after: object | None = None
     source_sha256: str | None = None
 
 
@@ -48,8 +60,9 @@ class PokemonLedger:
 class PlannedChange:
     species: str
     operation: str
-    before: tuple[int, str] | None
-    after: tuple[int, str] | None
+    field: str | None
+    before: object | None
+    after: object | None
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,27 @@ def _parse_entry(value: Any, field: str) -> tuple[int, str]:
     return level, move
 
 
+def _parse_stat_value(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 255:
+        raise _error(f"{field} must be an integer from 0 through 255")
+    return value
+
+
+def _parse_token_list(value: Any, field: str, prefix: str, *, max_items: int) -> tuple[str, ...]:
+    if (
+        not isinstance(value, list)
+        or not 1 <= len(value) <= max_items
+        or any(
+            not isinstance(item, str)
+            or not item.startswith(prefix)
+            or len(item) <= len(prefix)
+            for item in value
+        )
+    ):
+        raise _error(f"{field} must be a non-empty list of {prefix}* tokens")
+    return tuple(value)
+
+
 def _parse_change(value: Any, index: int) -> LedgerChange:
     field = f"changes[{index}]"
     if not isinstance(value, dict):
@@ -110,19 +144,36 @@ def _parse_change(value: Any, index: int) -> LedgerChange:
             raise _error(f"{field}.source_sha256 must be a 64-character SHA-256 digest")
         digest = digest.casefold()
 
-    before: tuple[int, str] | None = None
-    after: tuple[int, str] | None = None
+    field_name: str | None = None
+    before: object | None = None
+    after: object | None = None
     if operation == "insert_level_move":
         after = _parse_entry(value.get("entry"), f"{field}.entry")
     elif operation == "replace_level_move":
         before = _parse_entry(value.get("from"), f"{field}.from")
         after = _parse_entry(value.get("to"), f"{field}.to")
-    else:
+    elif operation == "remove_level_move":
         before = _parse_entry(value.get("entry"), f"{field}.entry")
+    elif operation == "set_base_stat":
+        stat = value.get("stat")
+        if not isinstance(stat, str) or stat not in _STAT_FIELDS:
+            raise _error(f"{field}.stat must be a supported base stat")
+        field_name = stat
+        before = _parse_stat_value(value.get("from"), f"{field}.from")
+        after = _parse_stat_value(value.get("to"), f"{field}.to")
+    elif operation == "set_types":
+        field_name = "types"
+        before = _parse_token_list(value.get("from"), f"{field}.from", "TYPE_", max_items=2)
+        after = _parse_token_list(value.get("to"), f"{field}.to", "TYPE_", max_items=2)
+    elif operation == "set_abilities":
+        field_name = "abilities"
+        before = _parse_token_list(value.get("from"), f"{field}.from", "ABILITY_", max_items=3)
+        after = _parse_token_list(value.get("to"), f"{field}.to", "ABILITY_", max_items=3)
 
     return LedgerChange(
         species=species,
         operation=operation,
+        field=field_name,
         before=before,
         after=after,
         source_sha256=digest,
@@ -179,9 +230,13 @@ def _matching_indices(entries: list[list[Any]], expected: tuple[int, str]) -> li
     return [index for index, entry in enumerate(entries) if tuple(entry) == expected]
 
 
-def _apply_change(entries: list[list[Any]], change: LedgerChange, relative_path: Path) -> None:
+def _apply_learnset_change(
+    entries: list[list[Any]],
+    change: LedgerChange,
+    relative_path: Path,
+) -> None:
     if change.operation == "insert_level_move":
-        assert change.after is not None
+        assert isinstance(change.after, tuple)
         if _matching_indices(entries, change.after):
             raise RomModError(
                 f"{relative_path.as_posix()}: learnset already contains {list(change.after)!r}"
@@ -189,7 +244,7 @@ def _apply_change(entries: list[list[Any]], change: LedgerChange, relative_path:
         entries.append([change.after[0], change.after[1]])
         return
 
-    assert change.before is not None
+    assert isinstance(change.before, tuple)
     matches = _matching_indices(entries, change.before)
     if len(matches) != 1:
         raise RomModError(
@@ -202,12 +257,69 @@ def _apply_change(entries: list[list[Any]], change: LedgerChange, relative_path:
         del entries[index]
         return
 
-    assert change.after is not None
+    assert isinstance(change.after, tuple)
     if change.after != change.before and _matching_indices(entries, change.after):
         raise RomModError(
             f"{relative_path.as_posix()}: learnset already contains replacement {list(change.after)!r}"
         )
     entries[index] = [change.after[0], change.after[1]]
+
+
+def _apply_field_change(
+    data: dict[str, Any],
+    change: LedgerChange,
+    relative_path: Path,
+) -> None:
+    if change.operation == "set_base_stat":
+        assert change.field is not None
+        stats = data.get("base_stats")
+        if not isinstance(stats, dict):
+            raise RomModError(f"{relative_path.as_posix()}: base_stats is missing or malformed")
+        current = stats.get(change.field)
+        if current != change.before:
+            raise RomModError(
+                f"{relative_path.as_posix()}: expected base_stats.{change.field} "
+                f"to be {change.before!r}, found {current!r}"
+            )
+        stats[change.field] = change.after
+        return
+
+    if change.operation in {"set_types", "set_abilities"}:
+        assert change.field is not None
+        current = data.get(change.field)
+        if not isinstance(current, list):
+            raise RomModError(
+                f"{relative_path.as_posix()}: {change.field} is missing or malformed"
+            )
+        current_tuple = tuple(current)
+        if current_tuple != change.before:
+            raise RomModError(
+                f"{relative_path.as_posix()}: expected {change.field} "
+                f"to be {list(change.before)!r}, found {current!r}"
+            )
+        assert isinstance(change.after, tuple)
+        data[change.field] = list(change.after)
+        return
+
+    raise RomModError(
+        f"{relative_path.as_posix()}: unsupported prepared ledger operation {change.operation!r}"
+    )
+
+
+def _apply_change(
+    data: dict[str, Any],
+    entries: list[list[Any]],
+    change: LedgerChange,
+    relative_path: Path,
+) -> None:
+    if change.operation in {
+        "insert_level_move",
+        "replace_level_move",
+        "remove_level_move",
+    }:
+        _apply_learnset_change(entries, change, relative_path)
+        return
+    _apply_field_change(data, change, relative_path)
 
 
 def _serialized_sha256(data: dict[str, Any], indent: int) -> str:
@@ -246,11 +358,12 @@ def _prepare_ledger(root: Path, ledger: PokemonLedger) -> tuple[_PreparedFile, .
         entries = _learnset(new_data, document.relative_path)
         planned_changes: list[PlannedChange] = []
         for change in changes:
-            _apply_change(entries, change, document.relative_path)
+            _apply_change(new_data, entries, change, document.relative_path)
             planned_changes.append(
                 PlannedChange(
                     species=change.species,
                     operation=change.operation,
+                    field=change.field,
                     before=change.before,
                     after=change.after,
                 )
