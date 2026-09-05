@@ -159,6 +159,12 @@ def _source_analysis_payload(root: Path, domain: str) -> dict[str, object]:
     }
 
 
+def _ledger_json_value(value: object | None) -> object | None:
+    if isinstance(value, tuple):
+        return list(value)
+    return value
+
+
 def _source_ledger_payload(root: Path, ledger_path: Path, *, apply: bool) -> dict[str, object]:
     ledger = load_ledger(ledger_path)
     plan = apply_ledger(root, ledger) if apply else plan_ledger(root, ledger)
@@ -170,8 +176,9 @@ def _source_ledger_payload(root: Path, ledger_path: Path, *, apply: bool) -> dic
                 {
                     "species": change.species,
                     "operation": change.operation,
-                    "before": list(change.before) if change.before is not None else None,
-                    "after": list(change.after) if change.after is not None else None,
+                    "field": change.field,
+                    "before": _ledger_json_value(change.before),
+                    "after": _ledger_json_value(change.after),
                 }
             )
         files.append(
