@@ -263,3 +263,120 @@ def test_all_files_preflight_before_any_write(tmp_path: Path) -> None:
         apply_ledger(tmp_path, ledger)
 
     assert persian.read_bytes() == persian_before
+
+
+def test_set_base_stat_is_exact_guarded_and_preserves_unrelated_data(tmp_path: Path) -> None:
+    source = _write_species(tmp_path, "golem", [[35, "MOVE_ROCK_BLAST"]])
+    digest = _digest(source)
+    ledger = load_ledger(
+        _ledger_file(
+            tmp_path,
+            {
+                "version": 1,
+                "domain": "pokemon",
+                "changes": [
+                    {
+                        "species": "golem",
+                        "source_sha256": digest,
+                        "operation": "set_base_stat",
+                        "stat": "attack",
+                        "from": 80,
+                        "to": 120,
+                    }
+                ],
+            },
+        )
+    )
+
+    plan = plan_ledger(tmp_path, ledger)
+    planned = plan.files[0].changes[0]
+    assert planned.operation == "set_base_stat"
+    assert planned.field == "attack"
+    assert planned.before == 80
+    assert planned.after == 120
+
+    apply_ledger(tmp_path, ledger)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    assert data["base_stats"]["attack"] == 120
+    assert data["base_stats"]["hp"] == 60
+    assert data["learnset"]["by_level"] == [[35, "MOVE_ROCK_BLAST"]]
+
+
+def test_set_types_and_abilities_use_exact_whole_field_guards(tmp_path: Path) -> None:
+    source = _write_species(tmp_path, "persian", [[25, "MOVE_TAUNT"]])
+    digest = _digest(source)
+    ledger = load_ledger(
+        _ledger_file(
+            tmp_path,
+            {
+                "version": 1,
+                "domain": "pokemon",
+                "changes": [
+                    {
+                        "species": "persian",
+                        "source_sha256": digest,
+                        "operation": "set_types",
+                        "from": ["TYPE_NORMAL", "TYPE_NORMAL"],
+                        "to": ["TYPE_NORMAL"],
+                    },
+                    {
+                        "species": "persian",
+                        "source_sha256": digest,
+                        "operation": "set_abilities",
+                        "from": ["ABILITY_NONE", "ABILITY_NONE"],
+                        "to": ["ABILITY_LIMBER", "ABILITY_TECHNICIAN"],
+                    },
+                ],
+            },
+        )
+    )
+
+    plan = plan_ledger(tmp_path, ledger)
+    assert plan.files[0].changes[0].before == ("TYPE_NORMAL", "TYPE_NORMAL")
+    assert plan.files[0].changes[0].after == ("TYPE_NORMAL",)
+    assert plan.files[0].changes[1].before == ("ABILITY_NONE", "ABILITY_NONE")
+    assert plan.files[0].changes[1].after == ("ABILITY_LIMBER", "ABILITY_TECHNICIAN")
+
+    apply_ledger(tmp_path, ledger)
+    data = json.loads(source.read_text(encoding="utf-8"))
+    assert data["types"] == ["TYPE_NORMAL"]
+    assert data["abilities"] == ["ABILITY_LIMBER", "ABILITY_TECHNICIAN"]
+
+
+def test_mixed_multi_file_ledger_preflights_stat_mismatch_before_any_write(tmp_path: Path) -> None:
+    persian = _write_species(tmp_path, "persian", [[25, "MOVE_TAUNT"]])
+    primeape = _write_species(tmp_path, "primeape", [[28, "MOVE_RAGE"]])
+    persian_before = persian.read_bytes()
+
+    ledger = load_ledger(
+        _ledger_file(
+            tmp_path,
+            {
+                "version": 1,
+                "domain": "pokemon",
+                "changes": [
+                    {
+                        "species": "persian",
+                        "source_sha256": _digest(persian),
+                        "operation": "set_base_stat",
+                        "stat": "speed",
+                        "from": 80,
+                        "to": 115,
+                    },
+                    {
+                        "species": "primeape",
+                        "source_sha256": _digest(primeape),
+                        "operation": "set_base_stat",
+                        "stat": "attack",
+                        "from": 999,
+                        "to": 115,
+                    },
+                ],
+            },
+        )
+    )
+
+    with pytest.raises(RomModError, match="base_stats.attack"):
+        apply_ledger(tmp_path, ledger)
+
+    assert persian.read_bytes() == persian_before
