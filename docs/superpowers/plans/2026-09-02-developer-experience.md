@@ -24,6 +24,8 @@ Reduce the manual loop between an approved modification and a tested ROM while k
 
 The Phase 3.6 boundary is intentionally deterministic: it prepares and launches a configured emulator workflow, but does not yet claim scripted in-game behavioral proof. Deeper emulator automation remains a later layer.
 
+**Canonical integration:** Phase 3 was fast-forward integrated into `feature/nds-foundation` after the developer-experience branch completed its full CI suite.
+
 ## Phase 3.1 scanner contract
 
 The scanner is split into a read-only detector and an explicit report writer so discovery can be reused safely by later commands.
