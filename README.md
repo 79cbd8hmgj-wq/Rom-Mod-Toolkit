@@ -270,6 +270,66 @@ An NDS build:
 
 `ndspy` may repack/alignment-adjust regions and recalculate header/FAT values when saving, so an untouched rebuild is expected to be deterministic and structurally equivalent rather than universally byte-identical.
 
+## Guarded source ledgers
+
+For Pokémon-style source projects, approved changes can be grouped into one SHA-256-pinned ledger and preflighted across every touched species before any write occurs.
+
+Supported operations now include:
+
+- `insert_level_move`
+- `replace_level_move`
+- `remove_level_move`
+- `set_base_stat`
+- `set_types`
+- `set_abilities`
+
+Example:
+
+```json
+{
+  "version": 1,
+  "domain": "pokemon",
+  "changes": [
+    {
+      "species": "primeape",
+      "source_sha256": "<sha256>",
+      "operation": "set_base_stat",
+      "stat": "attack",
+      "from": 105,
+      "to": 115
+    },
+    {
+      "species": "persian",
+      "source_sha256": "<sha256>",
+      "operation": "set_abilities",
+      "from": ["ABILITY_NONE", "ABILITY_NONE"],
+      "to": ["ABILITY_LIMBER", "ABILITY_TECHNICIAN"]
+    },
+    {
+      "species": "primeape",
+      "source_sha256": "<sha256>",
+      "operation": "replace_level_move",
+      "from": [28, "MOVE_RAGE"],
+      "to": [29, "MOVE_BRICK_BREAK"]
+    }
+  ]
+}
+```
+
+Dry-run first:
+
+```bash
+rommod source-ledger ./project approved-ledger.json
+```
+
+Apply only after review:
+
+```bash
+rommod source-ledger ./project approved-ledger.json --apply
+```
+
+Apply mode requires a matching `source_sha256` on every touched species. Base-stat edits use exact old-value guards, and type/ability edits guard the complete current field. A mismatch anywhere in the ledger aborts during preflight before writes begin.
+
 ## Developer experience workflow
 
 For source/decomp projects, Phase 3 adds a faster iteration loop around the existing ROM engineering layer:
@@ -278,6 +338,7 @@ For source/decomp projects, Phase 3 adds a faster iteration loop around the exis
 rommod scan ./project
 rommod build ./project
 rommod validate ./project
+rommod dev ./project
 rommod source-diff ./before ./after
 rommod checkpoint "balance-pass-1" --root ./project
 rommod compare ./project/checkpoints/balance-pass-1 ./project/checkpoints/balance-pass-2
@@ -289,6 +350,29 @@ rommod test ./project
 `rommod scan` detects supported source layouts, Make-based native builds, known toolchain markers, data systems, and existing NDS outputs. Scan metadata is persisted under `rommod/` only when the scan command explicitly writes reports.
 
 Checkpoints snapshot Pokémon and move source data, pin every snapshot file by SHA-256, copy the current build report when present, generate semantic change metadata plus an HTML review file, and support hash-verified restore. `rommod compare` reuses the semantic Pokémon diff engine.
+
+
+### One-command developer cycle
+
+`rommod dev` connects the source-data and ROM-engineering layers:
+
+```bash
+rommod dev ./project
+rommod dev ./project --ledger approved-ledger.json
+rommod dev ./project --ledger approved-ledger.json --dry-run-emulator
+rommod dev ./project --ledger approved-ledger.json --launch-emulator
+```
+
+The command performs, in order:
+
+1. optional SHA-pinned ledger application;
+2. source repository validation;
+3. native source-project build;
+4. structural verification of every produced `.nds` output;
+5. optional configured emulator dry-run or launch;
+6. atomic report generation at `rommod/reports/dev.json`.
+
+If source validation fails, the build is not started. The approved ledger itself remains protected by the normal per-file hash checks and full preflight rules.
 
 The emulator launcher is deliberately configuration-driven. Create `rommod/emulator.json` with a project-contained ROM and optional savestate:
 
@@ -306,7 +390,7 @@ The command must contain `{rom}`; `{savestate}` is expanded only when a savestat
 
 The suite uses programmatically generated synthetic Nintendo DS fixtures; proprietary commercial ROM data is not required.
 
-Coverage includes project/source locking, ROM round-trip, extraction/NitroFS replacement, overlays, address mapping, guarded byte patches, deterministic builds, structural validation, CLI workflows, real armips patching, component-aware symbols, ARM/Thumb hooks, freestanding C compilation, multi-source/include/define handling, C-to-Thumb interworking, read-only free-space discovery, verified BPS/IPS/xdelta distribution, project scanning, source builds, semantic diffs, unified validation, checkpoints/restore, and configured emulator launch workflows.
+Coverage includes project/source locking, ROM round-trip, extraction/NitroFS replacement, overlays, address mapping, guarded byte patches, deterministic builds, structural validation, CLI workflows, real armips patching, component-aware symbols, ARM/Thumb hooks, freestanding C compilation, multi-source/include/define handling, C-to-Thumb interworking, read-only free-space discovery, verified BPS/IPS/xdelta distribution, project scanning, source builds, semantic diffs, unified validation, checkpoints/restore, and configured emulator launch workflows, guarded mixed-field Pokémon ledgers, C3D2-style multi-species source edits, and the one-command developer cycle.
 
 ## Deferred NDS work
 
