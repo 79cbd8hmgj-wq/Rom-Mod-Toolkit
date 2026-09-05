@@ -87,3 +87,42 @@ def test_source_ledger_cli_requires_explicit_apply_to_write(tmp_path: Path, caps
     assert output["applied"] is True
     data = json.loads(source.read_text(encoding="utf-8"))
     assert data["learnset"]["by_level"][0] == [29, "MOVE_BRICK_BREAK"]
+
+
+def test_source_ledger_cli_reports_and_applies_base_stat_edits(tmp_path: Path, capsys) -> None:
+    source = _species(tmp_path)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    ledger = tmp_path / "stat-ledger.json"
+    _write_json(
+        ledger,
+        {
+            "version": 1,
+            "domain": "pokemon",
+            "changes": [
+                {
+                    "species": "primeape",
+                    "source_sha256": digest,
+                    "operation": "set_base_stat",
+                    "stat": "attack",
+                    "from": 105,
+                    "to": 115,
+                }
+            ],
+        },
+    )
+
+    assert main(["source-ledger", str(tmp_path), str(ledger)]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    change = dry_run["files"][0]["changes"][0]
+    assert change == {
+        "species": "primeape",
+        "operation": "set_base_stat",
+        "field": "attack",
+        "before": 105,
+        "after": 115,
+    }
+
+    assert main(["source-ledger", str(tmp_path), str(ledger), "--apply"]) == 0
+    capsys.readouterr()
+    data = json.loads(source.read_text(encoding="utf-8"))
+    assert data["base_stats"]["attack"] == 115
