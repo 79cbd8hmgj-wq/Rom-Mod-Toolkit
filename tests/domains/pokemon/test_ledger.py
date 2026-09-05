@@ -368,7 +368,7 @@ def test_mixed_multi_file_ledger_preflights_stat_mismatch_before_any_write(tmp_p
                         "source_sha256": _digest(primeape),
                         "operation": "set_base_stat",
                         "stat": "attack",
-                        "from": 999,
+                        "from": 81,
                         "to": 115,
                     },
                 ],
