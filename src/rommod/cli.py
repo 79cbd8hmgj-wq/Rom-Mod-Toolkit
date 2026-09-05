@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from rommod.dev.build import build_source_project
+from rommod.dev.checkpoints import compare_checkpoints, create_checkpoint, restore_checkpoint
 from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.diff import diff_repositories
@@ -72,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
     patch_cmd.add_argument("project", type=Path)
     patch_cmd.add_argument("--format", choices=("bps", "ips", "xdelta"), required=True)
     patch_cmd.add_argument("--output", type=Path)
+
+    checkpoint_cmd = subparsers.add_parser("checkpoint", help="snapshot source data and build metadata")
+    checkpoint_cmd.add_argument("name")
+    checkpoint_cmd.add_argument("--root", type=Path, default=Path("."))
+
+    compare_cmd = subparsers.add_parser("compare", help="compare two developer checkpoints semantically")
+    compare_cmd.add_argument("before", type=Path)
+    compare_cmd.add_argument("after", type=Path)
+
+    restore_cmd = subparsers.add_parser("restore", help="restore a verified developer checkpoint")
+    restore_cmd.add_argument("checkpoint", type=Path)
+    restore_cmd.add_argument("--root", type=Path, default=Path("."))
 
     source_analyze_cmd = subparsers.add_parser(
         "source-analyze",
@@ -258,6 +271,29 @@ def main(argv: list[str] | None = None) -> int:
                         "target_sha256": result.target_sha256,
                         "verified": result.verified,
                     },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "checkpoint":
+            result = create_checkpoint(args.root, args.name)
+            print(
+                json.dumps(
+                    {"directory": str(result.directory), "file_count": result.file_count},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "compare":
+            print(json.dumps(compare_checkpoints(args.before, args.after).to_dict(), indent=2, sort_keys=True))
+            return 0
+        if args.command == "restore":
+            result = restore_checkpoint(args.root, args.checkpoint)
+            print(
+                json.dumps(
+                    {"checkpoint": str(result.checkpoint), "restored_files": result.restored_files},
                     indent=2,
                     sort_keys=True,
                 )
