@@ -270,11 +270,43 @@ An NDS build:
 
 `ndspy` may repack/alignment-adjust regions and recalculate header/FAT values when saving, so an untouched rebuild is expected to be deterministic and structurally equivalent rather than universally byte-identical.
 
+## Developer experience workflow
+
+For source/decomp projects, Phase 3 adds a faster iteration loop around the existing ROM engineering layer:
+
+```bash
+rommod scan ./project
+rommod build ./project
+rommod validate ./project
+rommod source-diff ./before ./after
+rommod checkpoint "balance-pass-1" --root ./project
+rommod compare ./project/checkpoints/balance-pass-1 ./project/checkpoints/balance-pass-2
+rommod restore ./project/checkpoints/balance-pass-1 --root ./project
+rommod test ./project --dry-run
+rommod test ./project
+```
+
+`rommod scan` detects supported source layouts, Make-based native builds, known toolchain markers, data systems, and existing NDS outputs. Scan metadata is persisted under `rommod/` only when the scan command explicitly writes reports.
+
+Checkpoints snapshot Pokémon and move source data, pin every snapshot file by SHA-256, copy the current build report when present, generate semantic change metadata plus an HTML review file, and support hash-verified restore. `rommod compare` reuses the semantic Pokémon diff engine.
+
+The emulator launcher is deliberately configuration-driven. Create `rommod/emulator.json` with a project-contained ROM and optional savestate:
+
+```json
+{
+  "command": ["melonDS", "--load-state", "{savestate}", "{rom}"],
+  "rom": "build/game.nds",
+  "savestate": "test_states/evolution.state"
+}
+```
+
+The command must contain `{rom}`; `{savestate}` is expanded only when a savestate is configured. ROM and savestate paths are required to stay inside the project root, and the emulator is launched directly with `shell=False`. Use `--dry-run` to inspect the fully resolved command without starting the emulator.
+
 ## Tests
 
 The suite uses programmatically generated synthetic Nintendo DS fixtures; proprietary commercial ROM data is not required.
 
-Coverage includes project/source locking, ROM round-trip, extraction/NitroFS replacement, overlays, address mapping, guarded byte patches, deterministic builds, structural validation, CLI workflows, real armips patching, component-aware symbols, ARM/Thumb hooks, freestanding C compilation, multi-source/include/define handling, C-to-Thumb interworking, read-only free-space discovery, and verified BPS/IPS/xdelta distribution.
+Coverage includes project/source locking, ROM round-trip, extraction/NitroFS replacement, overlays, address mapping, guarded byte patches, deterministic builds, structural validation, CLI workflows, real armips patching, component-aware symbols, ARM/Thumb hooks, freestanding C compilation, multi-source/include/define handling, C-to-Thumb interworking, read-only free-space discovery, verified BPS/IPS/xdelta distribution, project scanning, source builds, semantic diffs, unified validation, checkpoints/restore, and configured emulator launch workflows.
 
 ## Deferred NDS work
 
@@ -284,7 +316,7 @@ The current NDS path intentionally does **not** yet include:
 - C++ runtime support, constructors, exceptions, or a richer freestanding runtime;
 - Keystone or Unicorn integration;
 - NitroFS create/delete operations;
-- emulator-driven behavioral validation.
+- scripted emulator control and automatic in-game behavioral assertions beyond the current configured launch/save-state harness.
 
 These are follow-up layers rather than blockers for the NDS modification pipeline defined by the original implementation plan.
 
