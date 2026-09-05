@@ -10,6 +10,7 @@ from pathlib import Path
 
 from rommod.dev.build import build_source_project
 from rommod.dev.checkpoints import compare_checkpoints, create_checkpoint, restore_checkpoint
+from rommod.dev.emulator import launch_emulator_test, prepare_emulator_test
 from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.diff import diff_repositories
@@ -49,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_cmd = subparsers.add_parser("build", help="build an NDS mod or discovered source project")
     build_cmd.add_argument("project", type=Path)
+
+    test_cmd = subparsers.add_parser("test", help="launch or preview the configured emulator test workflow")
+    test_cmd.add_argument("root", type=Path)
+    test_cmd.add_argument("--dry-run", action="store_true", help="print the resolved command without launching")
 
     validate_cmd = subparsers.add_parser(
         "validate",
@@ -230,6 +235,37 @@ def main(argv: list[str] | None = None) -> int:
                             "command": list(result.command),
                             "outputs": list(result.outputs),
                             "report": str(result.report_path),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            return 0
+        if args.command == "test":
+            if args.dry_run:
+                plan = prepare_emulator_test(args.root)
+                print(
+                    json.dumps(
+                        {
+                            "launched": False,
+                            "rom": str(plan.rom),
+                            "savestate": str(plan.savestate) if plan.savestate is not None else None,
+                            "command": list(plan.command),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                result = launch_emulator_test(args.root)
+                print(
+                    json.dumps(
+                        {
+                            "launched": True,
+                            "pid": result.pid,
+                            "rom": str(result.plan.rom),
+                            "savestate": str(result.plan.savestate) if result.plan.savestate is not None else None,
+                            "command": list(result.plan.command),
                         },
                         indent=2,
                         sort_keys=True,
