@@ -11,6 +11,7 @@ from pathlib import Path
 from rommod.dev.build import build_source_project
 from rommod.dev.checkpoints import compare_checkpoints, create_checkpoint, restore_checkpoint
 from rommod.dev.emulator import launch_emulator_test, prepare_emulator_test
+from rommod.dev.workflow import run_dev_cycle
 from rommod.discovery.scanner import scan_project, write_scan_reports
 from rommod.domains.pokemon.analysis import analyze_repository
 from rommod.domains.pokemon.diff import diff_repositories
@@ -50,6 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_cmd = subparsers.add_parser("build", help="build an NDS mod or discovered source project")
     build_cmd.add_argument("project", type=Path)
+
+    dev_cmd = subparsers.add_parser(
+        "dev",
+        help="apply an approved ledger, validate source, build, verify ROM outputs, and optionally launch",
+    )
+    dev_cmd.add_argument("root", type=Path)
+    dev_cmd.add_argument("--ledger", type=Path)
+    emulator_group = dev_cmd.add_mutually_exclusive_group()
+    emulator_group.add_argument("--launch-emulator", action="store_true")
+    emulator_group.add_argument("--dry-run-emulator", action="store_true")
 
     test_cmd = subparsers.add_parser("test", help="launch or preview the configured emulator test workflow")
     test_cmd.add_argument("root", type=Path)
@@ -247,6 +258,21 @@ def main(argv: list[str] | None = None) -> int:
                         sort_keys=True,
                     )
                 )
+            return 0
+        if args.command == "dev":
+            emulator_mode = (
+                "launch"
+                if args.launch_emulator
+                else "dry-run"
+                if args.dry_run_emulator
+                else "none"
+            )
+            result = run_dev_cycle(
+                args.root,
+                ledger_path=args.ledger,
+                emulator_mode=emulator_mode,
+            )
+            print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
             return 0
         if args.command == "test":
             if args.dry_run:
