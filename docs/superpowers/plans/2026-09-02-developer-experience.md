@@ -13,6 +13,17 @@ Reduce the manual loop between an approved modification and a tested ROM while k
 5. **Checkpoints/history** — reproducible snapshots, comparisons, and rollback metadata for iterative balancing.
 6. **Emulator workflow** — optional build/launch/save-state-driven test harness after the deterministic developer loop is stable.
 
+## Implementation status
+
+- [x] Phase 3.1 project scanner
+- [x] Phase 3.2 unified source/decomp build wrapper
+- [x] Phase 3.3 semantic Pokémon source diff
+- [x] Phase 3.4 unified validation command
+- [x] Phase 3.5 hashed checkpoints, semantic comparison, and guarded restore
+- [x] Phase 3.6 configured emulator launch/save-state harness with dry-run mode
+
+The Phase 3.6 boundary is intentionally deterministic: it prepares and launches a configured emulator workflow, but does not yet claim scripted in-game behavioral proof. Deeper emulator automation remains a later layer.
+
 ## Phase 3.1 scanner contract
 
 The scanner is split into a read-only detector and an explicit report writer so discovery can be reused safely by later commands.
